@@ -214,7 +214,7 @@ class MigratorWindow(QMainWindow):
                                  destination_label=Path(self.destination.text().strip()).name,
                                  discovered=len(self.restore_manifest.records), created=report["created"],
                                  overwritten=report["overwritten"], skipped=report["skipped"], errors=report["errors"],
-                                 verification="package-authentication-and-file-hash-checks-passed")
+                                 verification=("package-authenticated; restore-errors-present" if report["errors"] else "package-authenticated; restored-files-verified"))
                 self.restore_log.appendPlainText(f"\nTechnician report saved: {report_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Restore failed", str(exc))
