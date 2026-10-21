@@ -51,8 +51,10 @@ def validate_relative_path(value: str) -> str:
     # Packages are intended for Windows destinations. Reject names that Windows
     # cannot represent safely, rather than allowing silent renames or device paths.
     invalid_chars = set('<>:"|?*')
-    reserved_stems = {"CON", "PRN", "AUX", "NUL"} | {
+    reserved_stems = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
         f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+    } | {
+        f"{prefix}{number}" for prefix in ("COM", "LPT") for number in ("¹", "²", "³")
     }
     for part in parts:
         if part.endswith((" ", ".")) or any(ord(char) < 32 or char in invalid_chars for char in part):
@@ -111,7 +113,12 @@ class MigrationManifest:
             raise ValueError("Manifest exceeds the 64 MiB safety limit")
         try:
             obj: dict[str, Any] = json.loads(data.decode("utf-8"))
-            if not isinstance(obj, dict) or obj.get("version") != MANIFEST_VERSION:
+            if (
+                not isinstance(obj, dict)
+                or isinstance(obj.get("version"), bool)
+                or not isinstance(obj.get("version"), int)
+                or obj.get("version") != MANIFEST_VERSION
+            ):
                 raise ValueError("Unsupported or invalid manifest version")
             rows = obj.get("records")
             if not isinstance(rows, list) or len(rows) > 1_000_000:
