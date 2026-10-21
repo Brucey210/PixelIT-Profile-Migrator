@@ -79,6 +79,9 @@ class MigratorWindow(QMainWindow):
         folder_layout.addStretch(1); layout.addWidget(folders)
         self.outlook_label = QLabel("Outlook discovery: choose a source profile to scan.")
         self.outlook_label.setWordWrap(True); layout.addWidget(self.outlook_label)
+        self.include_outlook = QCheckBox("Include discovered Outlook PSTs, signatures and templates")
+        self.include_outlook.setChecked(True)
+        layout.addWidget(self.include_outlook)
         scan_row = QHBoxLayout()
         scan = QPushButton("Scan Outlook data"); scan.clicked.connect(self._scan_outlook)
         preflight = QPushButton("Run preflight scan"); preflight.clicked.connect(self._run_preflight)
@@ -233,9 +236,21 @@ class MigratorWindow(QMainWindow):
                     for item in preflight["findings"]
                 )
                 raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
-            manifest = build_manifest(source, selected, job_id)
+            selected_paths = list(selected)
+            if self.include_outlook.isChecked():
+                outlook = discover_outlook(source)
+                source_resolved = source.resolve(strict=True)
+                for category in ("pst", "signatures", "templates"):
+                    for found_path in outlook[category]:
+                        try:
+                            relative = Path(found_path).resolve(strict=True).relative_to(source_resolved).as_posix()
+                            selected_paths.append(relative)
+                        except (OSError, ValueError):
+                            # Ignore paths that vanished or no longer resolve under the selected profile.
+                            continue
+            manifest = build_manifest(source, selected_paths, job_id)
             if not manifest.records:
-                raise ValueError("No files were found in the selected folders.")
+                raise ValueError("No files were found in the selected folders or Outlook locations.")
             create_package(source, output, manifest, passphrase, progress=progress)
             return {"manifest": manifest, "output": output}
 
