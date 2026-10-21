@@ -239,12 +239,19 @@ class MigratorWindow(QMainWindow):
     def _worker_finished(self) -> None:
         QApplication.restoreOverrideCursor()
         self.centralWidget().setEnabled(True)
+        self.progress.setRange(0, 100)
         self._active_thread = None
         self._active_worker = None
 
     @Slot(int, int, str)
     def _create_progress(self, index: int, total: int, path: str) -> None:
-        self.progress.setValue(int(index * 100 / max(total, 1)))
+        if total <= 0:
+            self.progress.setRange(0, 0)
+            self.statusBar().showMessage(path)
+            return
+        if self.progress.maximum() == 0:
+            self.progress.setRange(0, 100)
+        self.progress.setValue(int(index * 100 / total))
         self.statusBar().showMessage(f"Packaging {index}/{total}: {path}")
 
     @Slot(int, int, str)
@@ -268,6 +275,7 @@ class MigratorWindow(QMainWindow):
         self.create_log.setPlainText("Preflight and inventory scan running…")
 
         def operation(progress):
+            progress(0, 0, "Running preflight checks…")
             selected_paths = list(selected)
             if include_outlook:
                 selected_paths.extend(outlook_relative_paths(source))
@@ -278,6 +286,7 @@ class MigratorWindow(QMainWindow):
                     for item in preflight["findings"]
                 )
                 raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
+            progress(0, 0, "Inventorying and hashing selected files…")
             manifest = build_manifest(source, selected_paths, job_id)
             if not manifest.records:
                 raise ValueError("No files were found in the selected folders or Outlook locations.")
