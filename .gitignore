@@ -1,0 +1,1 @@
+.venv/\n__pycache__/\n*.py[cod]\n.pytest_cache/\nbuild/\ndist/\n*.spec\n*.pitm\n.env\n
