@@ -4,7 +4,7 @@
 2. Launch the application on a development/test machine. Select the source profile root (normally the user's profile directory).
 3. Select common folders to package. The Outlook-data checkbox is enabled by default and adds discovered PSTs, signatures and templates by relative path; review scope carefully.
 4. Run preflight and Outlook discovery. The preflight is advisory and cannot prove cloud placeholders are hydrated or Windows metadata will be preserved.
-5. Choose an output path on approved encrypted storage and use a unique strong passphrase (12+ characters). Store the passphrase separately from the package.
+5. Review the credential checklist, complete only items actually verified, and save its JSON report if required by the job. The checklist stores status only, never credential values. Choose an output path on approved encrypted storage and use a unique strong passphrase (12+ characters). Store the passphrase separately from the package.
 6. Create the package and save the technician JSON report. Keep the source untouched.
 7. Transfer the package securely to the destination PC and open the Restore tab.
 8. Select an existing destination profile root and inspect the package. Inspection authenticates the manifest and all encrypted file payloads.
@@ -19,5 +19,5 @@
 - Windows junctions/reparse points, OneDrive/cloud placeholders, locked files, long paths, and races between preview and restore need Windows-specific hardening.
 - No durable resume journal or full rollback is implemented.
 - Outlook discovery is not a complete Outlook migration. OST files are normally cache files and must not be treated as the only mailbox copy.
-- Credential support is a checklist only. Use approved vendor workflows; never dump browser passwords, Windows Credential Manager secrets, password hashes or authentication tokens.
+- Credential support is a checklist and status report only. Use approved vendor workflows; never dump browser passwords, Windows Credential Manager secrets, password hashes or authentication tokens.
 - Do not use on live customer data until the release gates in [BUILD_WINDOWS.md](../BUILD_WINDOWS.md) have passed.
