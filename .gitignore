@@ -1,1 +1,16 @@
-.venv/\n__pycache__/\n*.py[cod]\n.pytest_cache/\nbuild/\ndist/\n*.spec\n*.pitm\n.env\n
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.spec
+*.pitm
+*.pitpkg
+*.partial
+*-restore-report.json
+*-package-report.json
+.env
+customer-data/
