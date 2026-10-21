@@ -6,7 +6,7 @@ Portable Windows profile migration toolkit for Pixel IT technicians.
 
 ## Implemented in the current branch
 
-- PySide6 desktop interface with package creation and restore tabs.
+- PySide6 desktop interface with package creation and restore tabs; inventory, package creation, package verification and restore run in a worker thread so large operations do not intentionally block the UI.
 - Folder selection for common profile folders, Outlook PST/signature/template discovery, and a read-only preflight scan.
 - Scrypt-derived AES-256-GCM key wrapping and chunked per-file AES-GCM encryption, with bounded-memory processing for large files.
 - Encrypted manifest with file sizes and SHA-256 hashes; package inspection authenticates every payload.
