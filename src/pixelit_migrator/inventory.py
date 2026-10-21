@@ -76,3 +76,23 @@ def build_manifest(source_root: Path, selected_paths: list[str], job_id: str | N
     return MigrationManifest(job_id=job_id or uuid4().hex[:12].upper(),
                              created_utc=datetime.now(timezone.utc).isoformat(),
                              source_computer=socket.gethostname(), records=tuple(records))
+
+
+def outlook_relative_paths(profile: Path) -> list[str]:
+    """Return discovered Outlook payload paths relative to the chosen profile root."""
+    root = profile.resolve(strict=True)
+    found = discover_outlook(root)
+    paths: dict[str, str] = {}
+    for category in ("pst", "signatures", "templates"):
+        for value in found[category]:
+            try:
+                candidate = Path(value).resolve(strict=True)
+                relative = candidate.relative_to(root).as_posix()
+                validate_relative_path(relative)
+                if is_link_or_reparse(candidate) or not candidate.is_file():
+                    continue
+                paths.setdefault(relative.casefold(), relative)
+            except (OSError, ValueError):
+                # Files can be moved/removed while inventory is running.
+                continue
+    return sorted(paths.values(), key=str.casefold)
