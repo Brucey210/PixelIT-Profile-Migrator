@@ -75,3 +75,23 @@ def test_failed_package_creation_does_not_replace_existing_output(tmp_path: Path
 
     assert package.read_bytes() == b"existing known-good output"
     assert not package.with_name(package.name + ".partial").exists()
+
+
+@pytest.mark.parametrize("size", [0, 1, 1024 * 1024, 1024 * 1024 + 37, 2 * 1024 * 1024 + 19])
+def test_streaming_package_round_trip_across_chunk_boundaries(tmp_path: Path, size: int):
+    source = tmp_path / "source"; source.mkdir()
+    destination = tmp_path / "destination"; destination.mkdir()
+    # Deterministic content makes the expected digest reproducible without fixtures.
+    content = bytes((i * 31 + 7) % 256 for i in range(size))
+    (source / "large.bin").write_bytes(content)
+    record = FileRecord("large.bin", size, hashlib.sha256(content).hexdigest())
+    manifest = MigrationManifest("STREAM-1", "2026-01-01T00:00:00+00:00", "TEST-PC", (record,))
+    package = tmp_path / "streamed.pitpkg"
+
+    create_package(source, package, manifest, "long test passphrase 123")
+    assert inspect_package(package, "long test passphrase 123") == manifest
+    report = restore_package(package, destination, "long test passphrase 123")
+
+    assert report["created"] == ["large.bin"]
+    assert report["errors"] == []
+    assert (destination / "large.bin").read_bytes() == content
