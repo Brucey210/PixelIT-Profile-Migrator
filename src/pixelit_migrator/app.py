@@ -167,7 +167,10 @@ class MigratorWindow(QMainWindow):
             QMessageBox.warning(self, "Source required", "Select a valid source profile/root first."); return
         try:
             target = Path(self.output.text().strip()) if self.output.text().strip() else None
-            result = run_preflight(source, target)
+            selected_paths = [check.text() for check in self.folder_checks if check.isChecked()]
+            if self.include_outlook.isChecked():
+                selected_paths.extend(outlook_relative_paths(source))
+            result = run_preflight(source, target, selected_paths=selected_paths)
             lines = [f"Readable files: {result['files_readable']}", f"Readable bytes: {result['bytes_readable']:,}",
                      f"Skipped items: {result['items_skipped']}", f"Advisory ready: {result['ready']}", ""]
             lines.extend(f"{f['severity'].upper()} {f['code']}: {f['path']} — {f['message']}" for f in result['findings'])
@@ -230,16 +233,16 @@ class MigratorWindow(QMainWindow):
         self.create_log.setPlainText("Preflight and inventory scan running…")
 
         def operation(progress):
-            preflight = run_preflight(source, output)
+            selected_paths = list(selected)
+            if include_outlook:
+                selected_paths.extend(outlook_relative_paths(source))
+            preflight = run_preflight(source, output, selected_paths=selected_paths)
             if not preflight["ready"]:
                 details = "\n".join(
                     f"{item['severity'].upper()} {item['code']}: {item['path']} — {item['message']}"
                     for item in preflight["findings"]
                 )
                 raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
-            selected_paths = list(selected)
-            if include_outlook:
-                selected_paths.extend(outlook_relative_paths(source))
             manifest = build_manifest(source, selected_paths, job_id)
             if not manifest.records:
                 raise ValueError("No files were found in the selected folders or Outlook locations.")
