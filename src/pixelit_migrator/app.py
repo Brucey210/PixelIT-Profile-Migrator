@@ -167,6 +167,13 @@ class MigratorWindow(QMainWindow):
                            progress=lambda i, total, path: self.progress.setValue(int(i * 100 / max(total, 1))))
             self.create_log.appendPlainText(f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}\nRun a test restore before relying on this package.")
             QMessageBox.information(self, "Package created", "Encrypted package created. Inspect it and perform a test restore to a separate folder.")
+            suggested = f"PixelIT-Job-{manifest.job_id}-package-report.json"
+            report_path, _ = QFileDialog.getSaveFileName(self, "Save technician package report", suggested, "JSON report (*.json)")
+            if report_path:
+                write_job_report(Path(report_path), job_id=manifest.job_id, operation="package-create",
+                                 source_label=manifest.source_computer, destination_label=output.name,
+                                 discovered=len(manifest.records), verification="package-created; test-restore-required")
+                self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
         except Exception as exc:
             self.create_log.appendPlainText(f"ERROR: {exc}"); QMessageBox.critical(self, "Package failed", str(exc))
         finally:
