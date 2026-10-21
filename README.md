@@ -13,7 +13,8 @@ Portable Windows profile migration toolkit for Pixel IT technicians.
 - Restore preview, conflict skipping by default, hash verification, and atomic staging for individual files.
 - Credential-handling checklist that directs technicians to vendor-supported transfer and reauthentication; no secret-store scraping.
 - JSON technician reports for package creation and restore.
-- GitHub Actions tests and a manual Windows portable-folder build workflow.
+- GitHub Actions tests on Windows and Ubuntu, a manual Windows portable-folder build workflow, and scheduled dependency vulnerability auditing.
+- Strict manifest checks for traversal, case-insensitive duplicates, file/directory collisions, invalid Windows names, and malformed sizes.
 
 ## Development
 
