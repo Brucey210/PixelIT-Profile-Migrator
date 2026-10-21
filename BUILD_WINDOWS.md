@@ -25,7 +25,7 @@ Distribute the generated `dist/PixelIT-Profile-Migrator/` folder only after test
 - Test interrupted package creation and restore, low disk space, locked files, Unicode and long paths.
 - Add Windows reparse-point detection, ACL/owner preservation decisions, EFS handling, alternate data streams, and robust rollback.
 - Test Outlook versions and PSTs; confirm OST/cache handling and document data not migrated.
-- Review memory use for large files; current package implementation reads each file into memory and is unsuitable for very large files.
+- Validate bounded-memory chunked encryption and restore with large PST/profile files and low-memory Windows systems. Alpha package format changed for chunking; recreate packages with the same current build.
 - Add independent package signature or authenticated metadata validation, secret-handling review and dependency audit.
 - Produce signed installer/portable release and checksums.
 
