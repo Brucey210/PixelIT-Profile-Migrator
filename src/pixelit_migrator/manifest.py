@@ -48,6 +48,20 @@ def validate_relative_path(value: str) -> str:
         raise ValueError("Unsafe path segment")
     if normal.startswith("//"):
         raise ValueError("UNC paths are not allowed")
+    # Packages are intended for Windows destinations. Reject names that Windows
+    # cannot represent safely, rather than allowing silent renames or device paths.
+    invalid_chars = set('<>:"|?*')
+    reserved_stems = {"CON", "PRN", "AUX", "NUL"} | {
+        f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+    }
+    for part in parts:
+        if part.endswith((" ", ".")) or any(ord(char) < 32 or char in invalid_chars for char in part):
+            raise ValueError("Path contains a Windows-invalid filename segment")
+        stem = part.split(".", 1)[0].upper()
+        if stem in reserved_stems:
+            raise ValueError("Path contains a reserved Windows device name")
+        if len(part) > 255:
+            raise ValueError("Path segment exceeds the Windows filename limit")
     return normal
 
 
