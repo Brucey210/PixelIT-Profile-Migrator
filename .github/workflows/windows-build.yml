@@ -21,7 +21,7 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
       - name: Build portable folder
-        run: pyinstaller --noconfirm --clean --windowed --name PixelIT-Profile-Migrator --collect-all cryptography --collect-all PySide6 --paths src main.py
+        run: pyinstaller --noconfirm --clean --windowed --name PixelIT-Profile-Migrator --collect-all cryptography --paths src main.py
       - name: Verify portable executable and create SHA-256 checksums
         shell: pwsh
         run: |
