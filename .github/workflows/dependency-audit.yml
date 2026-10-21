@@ -2,8 +2,10 @@ name: Dependency security audit
 on:
   push:
     branches: [main]
+    paths: ["pyproject.toml", ".github/workflows/dependency-audit.yml"]
   pull_request:
     branches: [main]
+    paths: ["pyproject.toml", ".github/workflows/dependency-audit.yml"]
   schedule:
     - cron: "23 4 * * 1"
   workflow_dispatch:
