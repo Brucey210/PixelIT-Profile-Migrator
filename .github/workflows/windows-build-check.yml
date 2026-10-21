@@ -1,0 +1,33 @@
+name: Windows portable build check
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]" pyinstaller
+      - name: Run tests
+        run: python -m pytest -v
+      - name: Build portable folder
+        run: pyinstaller --noconfirm --clean --windowed --name PixelIT-Profile-Migrator --collect-all cryptography --collect-all PySide6 --paths src main.py
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "dist/PixelIT-Profile-Migrator/PixelIT-Profile-Migrator.exe"
+          if (-not (Test-Path $exe -PathType Leaf)) {
+            throw "PyInstaller did not produce the expected executable: $exe"
+          }
+          Get-Item $exe | Select-Object FullName, Length
