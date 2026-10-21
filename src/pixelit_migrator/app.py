@@ -6,24 +6,27 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit,
-    QProgressBar, QTabWidget, QVBoxLayout, QWidget,
+    QProgressBar, QTabWidget, QVBoxLayout, QWidget, QScrollArea,
 )
 
+from .credential_workflow import CREDENTIAL_CHECKLIST
 from .crypto_package import create_package, inspect_package, restore_package
-from .inventory import USER_FOLDERS, build_manifest, discover_outlook, list_profiles
+from .inventory import USER_FOLDERS, build_manifest, discover_outlook
 from .manifest import resolve_under
+from .preflight import run_preflight
 
 
 class MigratorWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Pixel IT Profile Migrator — Alpha")
-        self.resize(900, 650)
+        self.resize(980, 720)
         tabs = QTabWidget()
         tabs.addTab(self._build_create_tab(), "Create migration package")
         tabs.addTab(self._build_restore_tab(), "Restore package")
+        tabs.addTab(self._build_credential_tab(), "Outlook & credentials")
         self.setCentralWidget(tabs)
         self.statusBar().showMessage("Alpha build — verify an independent backup before use")
 
@@ -39,8 +42,7 @@ class MigratorWindow(QMainWindow):
         output_row = QHBoxLayout(); output_row.addWidget(self.output); output_row.addWidget(browse_output)
         output_widget = QWidget(); output_widget.setLayout(output_row)
         form.addRow("Package file", output_widget)
-        self.job_id = QLineEdit()
-        self.job_id.setPlaceholderText("Optional job ID; generated if blank")
+        self.job_id = QLineEdit(); self.job_id.setPlaceholderText("Optional job ID; generated if blank")
         form.addRow("Job ID", self.job_id)
         layout.addLayout(form)
         layout.addWidget(QLabel("Select folders relative to the chosen source root:"))
@@ -52,14 +54,17 @@ class MigratorWindow(QMainWindow):
         folder_layout.addStretch(1); layout.addWidget(folders)
         self.outlook_label = QLabel("Outlook discovery: choose a source profile to scan.")
         self.outlook_label.setWordWrap(True); layout.addWidget(self.outlook_label)
-        scan = QPushButton("Scan Outlook data"); scan.clicked.connect(self._scan_outlook); layout.addWidget(scan)
-        self.passphrase = QLineEdit(); self.passphrase.setEchoMode(QLineEdit.Password)
-        self.passphrase.setPlaceholderText("Use a long, unique passphrase (12+ characters)")
+        scan_row = QHBoxLayout()
+        scan = QPushButton("Scan Outlook data"); scan.clicked.connect(self._scan_outlook)
+        preflight = QPushButton("Run preflight scan"); preflight.clicked.connect(self._run_preflight)
+        scan_row.addWidget(scan); scan_row.addWidget(preflight); scan_row.addStretch(1); layout.addLayout(scan_row)
+        self.passphrase = QLineEdit(); self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
+        self.passphrase.setPlaceholderText("Use a unique passphrase (12+ characters)")
         form.addRow("Package passphrase", self.passphrase)
         self.progress = QProgressBar(); self.progress.setRange(0, 100); layout.addWidget(self.progress)
         self.create_log = QPlainTextEdit(); self.create_log.setReadOnly(True); layout.addWidget(self.create_log, 1)
         create = QPushButton("Create encrypted package"); create.clicked.connect(self._create_package); layout.addWidget(create)
-        note = QLabel("This alpha build packages selected folders only. Review skipped files and test restores before customer use.")
+        note = QLabel("ALPHA: selected folders only; Windows metadata, cloud placeholders and very large files require additional handling. Test restores before customer use.")
         note.setWordWrap(True); layout.addWidget(note)
         return page
 
@@ -79,6 +84,25 @@ class MigratorWindow(QMainWindow):
         restore = QPushButton("Restore non-conflicting files"); restore.clicked.connect(self._restore); layout.addWidget(restore)
         self.restore_manifest = None
         return page
+
+    def _build_credential_tab(self) -> QWidget:
+        page = QWidget(); outer = QVBoxLayout(page)
+        intro = QLabel("Use supported vendor workflows. This tool deliberately does not extract Windows passwords, browser secret stores or authentication tokens.")
+        intro.setWordWrap(True); outer.addWidget(intro)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        content = QWidget(); layout = QVBoxLayout(content); self.credential_checks = []
+        for item in CREDENTIAL_CHECKLIST:
+            check = QCheckBox(item.title)
+            check.setToolTip(item.instructions)
+            label = QLabel(item.instructions); label.setWordWrap(True)
+            layout.addWidget(check); layout.addWidget(label); self.credential_checks.append(check)
+        layout.addStretch(1); scroll.setWidget(content); outer.addWidget(scroll)
+        save = QPushButton("Show outstanding checklist items"); save.clicked.connect(self._show_credential_status); outer.addWidget(save)
+        return page
+
+    def _show_credential_status(self) -> None:
+        outstanding = [item.title for item, check in zip(CREDENTIAL_CHECKLIST, self.credential_checks) if not check.isChecked()]
+        QMessageBox.information(self, "Credential workflow", "Outstanding items:\n\n" + ("\n".join(outstanding) if outstanding else "All checklist items marked complete.") + "\n\nConfirm each item with the customer/technician; checkboxes are not proof of successful transfer.")
 
     def _choose_source(self) -> None:
         value = QFileDialog.getExistingDirectory(self, "Select source profile or root")
@@ -107,16 +131,32 @@ class MigratorWindow(QMainWindow):
                  "\nNotes:", *found["notes"]]
         self.outlook_label.setText("\n".join(lines))
 
-    def _create_package(self) -> None:
+    def _run_preflight(self) -> None:
         source = Path(self.source.text().strip())
-        output = Path(self.output.text().strip())
-        passphrase = self.passphrase.text()
-        selected = [c.text() for c in self.folder_checks if c.isChecked()]
+        if not source.is_dir():
+            QMessageBox.warning(self, "Source required", "Select a valid source profile/root first."); return
+        try:
+            target = Path(self.output.text().strip()) if self.output.text().strip() else None
+            result = run_preflight(source, target)
+            lines = [f"Readable files: {result['files_readable']}", f"Readable bytes: {result['bytes_readable']:,}",
+                     f"Skipped items: {result['items_skipped']}", f"Advisory ready: {result['ready']}", ""]
+            lines.extend(f"{f['severity'].upper()} {f['code']}: {f['path']} — {f['message']}" for f in result['findings'])
+            self.create_log.setPlainText("\n".join(lines))
+        except Exception as exc:
+            QMessageBox.critical(self, "Preflight failed", str(exc))
+
+    def _create_package(self) -> None:
+        source = Path(self.source.text().strip()); output = Path(self.output.text().strip())
+        passphrase = self.passphrase.text(); selected = [c.text() for c in self.folder_checks if c.isChecked()]
         if not source.is_dir() or not output.name or not selected:
             QMessageBox.warning(self, "Missing information", "Choose a source, output package and at least one folder."); return
         if len(passphrase) < 12:
             QMessageBox.warning(self, "Passphrase too short", "Use a unique passphrase of at least 12 characters."); return
         try:
+            preflight = run_preflight(source, output)
+            if not preflight["ready"]:
+                QMessageBox.warning(self, "Preflight warnings", "Preflight found blocking errors. Review the log and correct them before packaging.")
+                self._run_preflight(); return
             manifest = build_manifest(source, selected, self.job_id.text().strip() or None)
             if not manifest.records:
                 QMessageBox.warning(self, "No files found", "No files were found in the selected folders."); return
@@ -124,14 +164,12 @@ class MigratorWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             create_package(source, output, manifest, passphrase,
                            progress=lambda i, total, path: self.progress.setValue(int(i * 100 / max(total, 1))))
-            self.create_log.appendPlainText(f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}")
-            QMessageBox.information(self, "Package created", "Encrypted package created. Before relying on it, inspect it and perform a test restore to a separate folder.")
+            self.create_log.appendPlainText(f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}\nRun a test restore before relying on this package.")
+            QMessageBox.information(self, "Package created", "Encrypted package created. Inspect it and perform a test restore to a separate folder.")
         except Exception as exc:
-            self.create_log.appendPlainText(f"ERROR: {exc}")
-            QMessageBox.critical(self, "Package failed", str(exc))
+            self.create_log.appendPlainText(f"ERROR: {exc}"); QMessageBox.critical(self, "Package failed", str(exc))
         finally:
-            QApplication.restoreOverrideCursor()
-            self.passphrase.clear()
+            QApplication.restoreOverrideCursor(); self.passphrase.clear()
 
     def _preview_restore(self) -> None:
         package = Path(self.package_path.text().strip()); destination = Path(self.destination.text().strip())
@@ -150,8 +188,7 @@ class MigratorWindow(QMainWindow):
             lines += ["", f"Conflicts: {conflicts}", "No destination files have been changed."]
             self.restore_log.setPlainText("\n".join(lines)); self.restore_manifest = manifest
         except Exception as exc:
-            self.restore_manifest = None
-            self.restore_log.setPlainText(f"Inspection failed: {exc}")
+            self.restore_manifest = None; self.restore_log.setPlainText(f"Inspection failed: {exc}")
             QMessageBox.critical(self, "Package inspection failed", str(exc))
 
     def _restore(self) -> None:
@@ -171,13 +208,11 @@ class MigratorWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Restore failed", str(exc))
         finally:
-            QApplication.restoreOverrideCursor()
-            self.restore_passphrase.clear()
+            QApplication.restoreOverrideCursor(); self.restore_passphrase.clear()
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName("Pixel IT Profile Migrator")
+    app = QApplication(sys.argv); app.setApplicationName("Pixel IT Profile Migrator")
     window = MigratorWindow(); window.show()
     return app.exec()
 
