@@ -95,3 +95,15 @@ def test_streaming_package_round_trip_across_chunk_boundaries(tmp_path: Path, si
     assert report["created"] == ["large.bin"]
     assert report["errors"] == []
     assert (destination / "large.bin").read_bytes() == content
+
+
+def test_package_rejects_non_object_header_before_key_derivation(tmp_path: Path):
+    import zipfile
+    from pixelit_migrator.crypto_package import MAGIC
+
+    package = tmp_path / "malformed.pitpkg"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("header.json", MAGIC + b"[]")
+        archive.writestr("manifest.bin", b"not-a-manifest")
+    with pytest.raises(ValueError, match="Invalid package header object"):
+        inspect_package(package, "long test passphrase 123")
