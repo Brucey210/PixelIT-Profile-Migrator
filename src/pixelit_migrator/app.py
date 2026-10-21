@@ -164,19 +164,43 @@ class MigratorWindow(QMainWindow):
     def _run_preflight(self) -> None:
         source = Path(self.source.text().strip())
         if not source.is_dir():
-            QMessageBox.warning(self, "Source required", "Select a valid source profile/root first."); return
+            QMessageBox.warning(self, "Source required", "Select a valid source profile/root first.")
+            return
         try:
             target = Path(self.output.text().strip()) if self.output.text().strip() else None
             selected_paths = [check.text() for check in self.folder_checks if check.isChecked()]
             if self.include_outlook.isChecked():
                 selected_paths.extend(outlook_relative_paths(source))
-            result = run_preflight(source, target, selected_paths=selected_paths)
-            lines = [f"Readable files: {result['files_readable']}", f"Readable bytes: {result['bytes_readable']:,}",
-                     f"Skipped items: {result['items_skipped']}", f"Advisory ready: {result['ready']}", ""]
-            lines.extend(f"{f['severity'].upper()} {f['code']}: {f['path']} — {f['message']}" for f in result['findings'])
-            self.create_log.setPlainText("\n".join(lines))
+            if not selected_paths:
+                QMessageBox.warning(self, "Selection required", "Select folders or enable Outlook data inclusion.")
+                return
         except Exception as exc:
-            QMessageBox.critical(self, "Preflight failed", str(exc))
+            QMessageBox.critical(self, "Preflight setup failed", str(exc))
+            return
+        self.create_log.setPlainText("Preflight scan running in the background…")
+
+        def operation(progress):
+            return run_preflight(source, target, selected_paths=selected_paths)
+
+        self._start_worker(operation, self._preflight_succeeded, self._preflight_failed)
+
+    def _preflight_succeeded(self, result: dict) -> None:
+        lines = [
+            f"Readable files: {result['files_readable']}",
+            f"Readable bytes: {result['bytes_readable']:,}",
+            f"Skipped items: {result['items_skipped']}",
+            f"Advisory ready: {result['ready']}",
+            "",
+        ]
+        lines.extend(
+            f"{item['severity'].upper()} {item['code']}: {item['path']} — {item['message']}"
+            for item in result["findings"]
+        )
+        self.create_log.setPlainText("\n".join(lines))
+
+    def _preflight_failed(self, message: str) -> None:
+        self.create_log.setPlainText(f"Preflight failed: {message}")
+        QMessageBox.critical(self, "Preflight failed", message)
 
     def _start_worker(self, operation, on_success, on_failure, progress_handler=None) -> None:
         if self._active_thread is not None:
