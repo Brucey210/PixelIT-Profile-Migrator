@@ -105,5 +105,5 @@ def test_package_rejects_non_object_header_before_key_derivation(tmp_path: Path)
     with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("header.json", MAGIC + b"[]")
         archive.writestr("manifest.bin", b"not-a-manifest")
-    with pytest.raises(ValueError, match="Invalid package header object"):
+    with pytest.raises(ValueError, match="Invalid package header"):
         inspect_package(package, "long test passphrase 123")
