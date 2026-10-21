@@ -12,10 +12,16 @@ from .manifest import FileRecord, MigrationManifest, is_link_or_reparse, resolve
 USER_FOLDERS = ("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "Favorites")
 
 
-def _iter_regular_files(root: Path):
-    """Walk without descending through symlinks or Windows reparse points."""
+def _iter_regular_files(root: Path, *, strict: bool = False):
+    """Walk without descending through links; strict mode fails on inaccessible folders."""
     root = root.resolve(strict=True)
-    for current, dirs, names in os.walk(root, followlinks=False):
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    for current, dirs, names in os.walk(
+        root, followlinks=False, onerror=raise_walk_error if strict else None
+    ):
         base = Path(current)
         dirs[:] = [name for name in dirs if not is_link_or_reparse(base / name)]
         for name in names:
@@ -62,16 +68,18 @@ def build_manifest(source_root: Path, selected_paths: list[str], job_id: str | N
         path = resolve_under(root, relative)
         if is_link_or_reparse(path):
             continue
-        candidates = [path] if path.is_file() else _iter_regular_files(path) if path.is_dir() else []
+        candidates = [path] if path.is_file() else _iter_regular_files(path, strict=True) if path.is_dir() else []
         for child in candidates:
             try:
                 record = FileRecord.from_file(root, child)
-                folded = record.path.casefold()
-                if folded not in seen:
-                    records.append(record)
-                    seen.add(folded)
-            except (OSError, ValueError):
-                continue
+            except (OSError, ValueError) as exc:
+                # Never silently omit a file from a migration manifest: abort so the
+                # technician can correct the source or scope and retry.
+                raise ValueError(f"Unable to inventory selected file {child}: {exc}") from exc
+            folded = record.path.casefold()
+            if folded not in seen:
+                records.append(record)
+                seen.add(folded)
     records.sort(key=lambda item: item.path.casefold())
     return MigrationManifest(job_id=job_id or uuid4().hex[:12].upper(),
                              created_utc=datetime.now(timezone.utc).isoformat(),
