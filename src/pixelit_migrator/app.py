@@ -44,6 +44,8 @@ class MigratorWindow(QMainWindow):
         super().__init__()
         self._active_thread = None
         self._active_worker = None
+        self._pending_restore_manifest = None
+        self._pending_restore_destination = None
         self.setWindowTitle("Pixel IT Profile Migrator — Alpha")
         self.resize(980, 720)
         tabs = QTabWidget()
@@ -331,8 +333,16 @@ class MigratorWindow(QMainWindow):
         def operation(progress):
             return restore_package(package, destination, passphrase, overwrite_paths=set(), progress=progress)
 
-        self._start_worker(operation, lambda report: self._restore_succeeded(report, manifest, destination),
+        self._pending_restore_manifest = manifest
+        self._pending_restore_destination = destination
+        self._start_worker(operation, self._restore_succeeded_from_worker,
                            self._restore_failed, self._restore_progress)
+
+    def _restore_succeeded_from_worker(self, report: dict) -> None:
+        # A bound QObject slot ensures UI updates run on the GUI thread.
+        self._restore_succeeded(
+            report, self._pending_restore_manifest, self._pending_restore_destination
+        )
 
     def _restore_failed(self, message: str) -> None:
         self.restore_passphrase.clear()
