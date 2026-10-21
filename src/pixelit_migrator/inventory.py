@@ -7,14 +7,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .manifest import FileRecord, MigrationManifest
+from .manifest import FileRecord, MigrationManifest, is_link_or_reparse, resolve_under, validate_relative_path
 
 USER_FOLDERS = ("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "Favorites")
-OUTLOOK_PATHS = (
-    Path("AppData/Roaming/Microsoft/Signatures"),
-    Path("AppData/Roaming/Microsoft/Templates"),
-    Path("Documents/Outlook Files"),
-)
+
+
+def _iter_regular_files(root: Path):
+    """Walk without descending through symlinks or Windows reparse points."""
+    root = root.resolve(strict=True)
+    for current, dirs, names in os.walk(root, followlinks=False):
+        base = Path(current)
+        dirs[:] = [name for name in dirs if not is_link_or_reparse(base / name)]
+        for name in names:
+            path = base / name
+            if is_link_or_reparse(path) or not path.is_file():
+                continue
+            yield path
 
 
 def list_profiles() -> list[Path]:
@@ -25,18 +33,18 @@ def list_profiles() -> list[Path]:
     excluded = {"Public", "Default", "Default User", "All Users"}
     if not root.exists():
         return []
-    return sorted((p for p in root.iterdir() if p.is_dir() and p.name not in excluded), key=lambda p: p.name.casefold())
+    return sorted((p for p in root.iterdir() if p.is_dir() and not is_link_or_reparse(p) and p.name not in excluded), key=lambda p: p.name.casefold())
 
 
 def discover_outlook(profile: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {"pst": [], "signatures": [], "templates": [], "notes": []}
     appdata = profile / "AppData" / "Roaming" / "Microsoft"
     for base in (profile / "Documents" / "Outlook Files", profile / "AppData" / "Local" / "Microsoft" / "Outlook"):
-        if base.exists():
-            found["pst"].extend(str(p) for p in base.rglob("*.pst") if p.is_file())
+        if base.is_dir() and not is_link_or_reparse(base):
+            found["pst"].extend(str(p) for p in _iter_regular_files(base) if p.suffix.casefold() == ".pst")
     for key, path in (("signatures", appdata / "Signatures"), ("templates", appdata / "Templates")):
-        if path.exists():
-            found[key].extend(str(p) for p in path.rglob("*") if p.is_file())
+        if path.is_dir() and not is_link_or_reparse(path):
+            found[key].extend(str(p) for p in _iter_regular_files(path))
     found["notes"].extend([
         "OST files are normally cache files and should be rebuilt by Outlook; do not rely on OST as the only mailbox copy.",
         "Modern Outlook accounts may require sign-in and profile recreation on the destination.",
@@ -48,24 +56,23 @@ def discover_outlook(profile: Path) -> dict[str, list[str]]:
 def build_manifest(source_root: Path, selected_paths: list[str], job_id: str | None = None) -> MigrationManifest:
     root = source_root.resolve(strict=True)
     records: list[FileRecord] = []
-    for relative in selected_paths:
-        path = root / relative
-        if path.is_symlink():
+    seen: set[str] = set()
+    for raw_relative in selected_paths:
+        relative = validate_relative_path(raw_relative)
+        path = resolve_under(root, relative)
+        if is_link_or_reparse(path):
             continue
-        if path.is_file():
-            records.append(FileRecord.from_file(root, path))
-        elif path.is_dir():
-            for child in path.rglob("*"):
-                if child.is_symlink() or not child.is_file():
-                    continue
-                try:
-                    records.append(FileRecord.from_file(root, child))
-                except (OSError, ValueError):
-                    continue
+        candidates = [path] if path.is_file() else _iter_regular_files(path) if path.is_dir() else []
+        for child in candidates:
+            try:
+                record = FileRecord.from_file(root, child)
+                folded = record.path.casefold()
+                if folded not in seen:
+                    records.append(record)
+                    seen.add(folded)
+            except (OSError, ValueError):
+                continue
     records.sort(key=lambda item: item.path.casefold())
-    return MigrationManifest(
-        job_id=job_id or uuid4().hex[:12].upper(),
-        created_utc=datetime.now(timezone.utc).isoformat(),
-        source_computer=socket.gethostname(),
-        records=tuple(records),
-    )
+    return MigrationManifest(job_id=job_id or uuid4().hex[:12].upper(),
+                             created_utc=datetime.now(timezone.utc).isoformat(),
+                             source_computer=socket.gethostname(), records=tuple(records))
