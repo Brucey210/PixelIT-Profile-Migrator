@@ -291,7 +291,7 @@ class MigratorWindow(QMainWindow):
             if not manifest.records:
                 raise ValueError("No files were found in the selected folders or Outlook locations.")
             create_package(source, output, manifest, passphrase, progress=progress)
-            return {"manifest": manifest, "output": output}
+            return {"manifest": manifest, "output": output, "preflight": preflight}
 
         self._start_worker(operation, self._create_succeeded, self._create_failed, self._create_progress)
 
@@ -304,14 +304,25 @@ class MigratorWindow(QMainWindow):
         self.passphrase.clear()
         manifest = result["manifest"]
         output = result["output"]
+        findings = result["preflight"]["findings"]
+        warnings = [item for item in findings if item["severity"] == "warning"]
         self.create_log.appendPlainText(
             f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}"
+            f"\nPreflight warnings: {len(warnings)}"
             "\nRun a test restore before relying on this package."
         )
-        QMessageBox.information(
-            self, "Package created",
-            "Encrypted package created. Inspect it and perform a test restore to a separate folder."
-        )
+        for item in warnings:
+            self.create_log.appendPlainText(
+                f"WARNING {item['code']}: {item['path']} — {item['message']}"
+            )
+        message = "Encrypted package created. Inspect it and perform a test restore to a separate folder."
+        if warnings:
+            QMessageBox.warning(
+                self, "Package created with warnings",
+                message + f"\n\nPreflight reported {len(warnings)} warning(s). Review the log before using this package."
+            )
+        else:
+            QMessageBox.information(self, "Package created", message)
         suggested = f"PixelIT-Job-{manifest.job_id}-package-report.json"
         report_path, _ = QFileDialog.getSaveFileName(
             self, "Save technician package report", suggested, "JSON report (*.json)"
@@ -320,7 +331,13 @@ class MigratorWindow(QMainWindow):
             write_job_report(
                 Path(report_path), job_id=manifest.job_id, operation="package-create",
                 source_label=manifest.source_computer, destination_label=output.name,
-                discovered=len(manifest.records), verification="package-created; test-restore-required"
+                discovered=len(manifest.records),
+                skipped=[
+                    {"path": item["path"], "reason": item["message"], "code": item["code"]}
+                    for item in warnings
+                ],
+                verification=("package-created-with-preflight-warnings; test-restore-required" if warnings
+                              else "package-created; test-restore-required")
             )
             self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
 
