@@ -57,3 +57,12 @@ def test_manifest_round_trip():
 def test_manifest_rejects_oversized_input():
     with pytest.raises(ValueError, match="64 MiB"):
         MigrationManifest.from_bytes(b" " * (64 * 1024 * 1024 + 1))
+
+
+def test_manifest_rejects_boolean_version():
+    data = {
+        "version": True, "job_id": "job", "created_utc": "now", "source_computer": "PC",
+        "records": [],
+    }
+    with pytest.raises(ValueError, match="manifest version"):
+        MigrationManifest.from_bytes(json.dumps(data).encode())
