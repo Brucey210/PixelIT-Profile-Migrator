@@ -1,4 +1,5 @@
 import hashlib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -52,9 +53,14 @@ def test_tampered_package_fails_authentication(tmp_path: Path):
     (src / "a.txt").write_text("data", encoding="utf-8")
     package = tmp_path / "x.pitm"
     create_encrypted_package(src, package, "correct-horse-battery")
-    raw = bytearray(package.read_bytes())
-    raw[-1] ^= 0x01
-    package.write_bytes(raw)
+    with zipfile.ZipFile(package, "r") as original:
+        entries = {name: original.read(name) for name in original.namelist()}
+    payload = bytearray(entries["files/a.txt"])
+    payload[-1] ^= 0x01
+    entries["files/a.txt"] = bytes(payload)
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as changed:
+        for name, content in entries.items():
+            changed.writestr(name, content)
     with pytest.raises(Exception):
         preview_package(package, "correct-horse-battery", src)
 
