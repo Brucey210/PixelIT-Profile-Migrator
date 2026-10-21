@@ -20,33 +20,26 @@ class PreflightFinding:
 def run_preflight(source_root: Path, package_target: Path | None = None) -> dict:
     """Inventory readable regular files and surface common migration hazards.
 
-    This is a best-effort scan. It cannot prove files are unlocked, hydrated from
-    cloud storage, or fully preserve Windows metadata; the Windows release needs
-    dedicated reparse-point and cloud-provider API support.
+    Best-effort scan only: cloud hydration, all reparse-point types, locked-file
+    consistency and Windows metadata preservation need dedicated platform support.
+    This function does not create directories or modify source/destination files.
     """
     root = Path(source_root).resolve(strict=True)
     if not root.is_dir():
         raise ValueError("Source root must be a directory")
     findings: list[PreflightFinding] = []
-    files = 0
-    total_bytes = 0
-    skipped = 0
+    files = total_bytes = skipped = 0
     for current, dirs, names in os.walk(root, followlinks=False):
         base = Path(current)
         kept_dirs = []
         for name in dirs:
             path = base / name
             try:
-                if path.is_symlink():
+                attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) if os.name == "nt" else 0
+                if path.is_symlink() or (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
                     skipped += 1
-                    findings.append(PreflightFinding(str(path), "warning", "SYMLINK_SKIPPED", "Symbolic-link directory was not followed"))
+                    findings.append(PreflightFinding(str(path), "warning", "REPARSE_OR_SYMLINK_SKIPPED", "Directory link/reparse point was not followed"))
                     continue
-                if os.name == "nt":
-                    attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
-                    if attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
-                        skipped += 1
-                        findings.append(PreflightFinding(str(path), "warning", "REPARSE_POINT_SKIPPED", "Reparse-point directory requires Windows-specific handling"))
-                        continue
                 kept_dirs.append(name)
             except OSError as exc:
                 skipped += 1
@@ -55,18 +48,12 @@ def run_preflight(source_root: Path, package_target: Path | None = None) -> dict
         for name in names:
             path = base / name
             try:
-                if path.is_symlink() or not path.is_file():
+                attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) if os.name == "nt" else 0
+                if path.is_symlink() or not path.is_file() or (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
                     skipped += 1
-                    findings.append(PreflightFinding(str(path), "warning", "NON_REGULAR_FILE", "Non-regular or symbolic-link file was skipped"))
+                    findings.append(PreflightFinding(str(path), "warning", "NON_REGULAR_OR_REPARSE", "Non-regular, link or reparse-point file was skipped"))
                     continue
-                if os.name == "nt":
-                    attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
-                    if attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
-                        skipped += 1
-                        findings.append(PreflightFinding(str(path), "warning", "REPARSE_POINT_SKIPPED", "Reparse-point file requires Windows-specific handling"))
-                        continue
                 size = path.stat().st_size
-                # Read one byte to detect obvious access failures; a zero-byte file is still valid.
                 with path.open("rb") as stream:
                     stream.read(1)
                 files += 1
@@ -77,21 +64,16 @@ def run_preflight(source_root: Path, package_target: Path | None = None) -> dict
     if package_target is not None:
         target_parent = Path(package_target).expanduser().absolute().parent
         try:
-            target_parent.mkdir(parents=True, exist_ok=True)
+            if not target_parent.is_dir():
+                raise FileNotFoundError("Package destination directory does not exist")
             free = shutil.disk_usage(target_parent).free
-            # Encryption overhead + manifest/archive overhead reserve.
             required = int(total_bytes * 1.10) + 16 * 1024 * 1024
             if free < required:
                 findings.append(PreflightFinding(str(target_parent), "error", "INSUFFICIENT_SPACE",
-                                                 f"Estimated package space {required} bytes; free space {free} bytes"))
+                                                 f"Estimated required bytes: {required}; free bytes: {free}"))
         except OSError as exc:
             findings.append(PreflightFinding(str(target_parent), "error", "TARGET_UNAVAILABLE", str(exc)))
-    return {
-        "source_root": str(root),
-        "files_readable": files,
-        "bytes_readable": total_bytes,
-        "items_skipped": skipped,
-        "findings": [asdict(item) for item in findings],
-        "ready": not any(item.severity == "error" for item in findings),
-        "notice": "Preflight is advisory and does not replace a verified backup or Windows-specific migration tests.",
-    }
+    return {"source_root": str(root), "files_readable": files, "bytes_readable": total_bytes,
+            "items_skipped": skipped, "findings": [asdict(item) for item in findings],
+            "ready": not any(item.severity == "error" for item in findings),
+            "notice": "Advisory only; use a verified independent backup and platform-specific validation."}
