@@ -8,7 +8,7 @@ Portable Windows profile migration toolkit for Pixel IT technicians.
 
 - PySide6 desktop interface with package creation and restore tabs.
 - Folder selection for common profile folders, Outlook PST/signature/template discovery, and a read-only preflight scan.
-- Scrypt-derived AES-256-GCM key wrapping and per-file AES-GCM encryption.
+- Scrypt-derived AES-256-GCM key wrapping and chunked per-file AES-GCM encryption, with bounded-memory processing for large files.
 - Encrypted manifest with file sizes and SHA-256 hashes; package inspection authenticates every payload.
 - Restore preview, conflict skipping by default, hash verification, and atomic staging for individual files.
 - Credential-handling checklist that directs technicians to vendor-supported transfer and reauthentication; no secret-store scraping.
@@ -32,8 +32,8 @@ See [BUILD_WINDOWS.md](BUILD_WINDOWS.md) for the development packaging command a
 
 ## Known blockers before production
 
-- Encryption currently buffers whole files in memory; implement bounded-memory streaming for large PSTs and profiles.
-- Windows reparse-point/junction handling needs native checks and race-resistant restore writes.
+- The package payload format changed during alpha to support chunked encryption; treat older alpha packages as incompatible and recreate them with the current build.
+- Windows reparse-point/junction handling needs native checks and race-resistant restore writes; temporary files are staged atomically, but full transactional rollback is not implemented.
 - No preservation of ACLs, owners, EFS semantics, alternate data streams, all timestamps, registry settings or application-specific state.
 - No durable interrupted-job resume journal, full rollback, signed reports, or code-signed release.
 - Outlook support currently discovers selected files; it does not guarantee rules, autocomplete, local contacts/calendars, account profiles or modern authentication migration.
