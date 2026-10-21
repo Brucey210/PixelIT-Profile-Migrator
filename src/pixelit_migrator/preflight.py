@@ -7,6 +7,8 @@ import stat
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from .manifest import is_link_or_reparse, resolve_under
+
 
 @dataclass(frozen=True)
 class PreflightFinding:
@@ -17,7 +19,12 @@ class PreflightFinding:
     size_bytes: int = 0
 
 
-def run_preflight(source_root: Path, package_target: Path | None = None) -> dict:
+def run_preflight(
+    source_root: Path,
+    package_target: Path | None = None,
+    *,
+    selected_paths: list[str] | None = None,
+) -> dict:
     """Inventory readable regular files and surface common migration hazards.
 
     Best-effort scan only: cloud hydration, all reparse-point types, locked-file
@@ -29,38 +36,70 @@ def run_preflight(source_root: Path, package_target: Path | None = None) -> dict
         raise ValueError("Source root must be a directory")
     findings: list[PreflightFinding] = []
     files = total_bytes = skipped = 0
-    for current, dirs, names in os.walk(root, followlinks=False):
-        base = Path(current)
-        kept_dirs = []
-        for name in dirs:
-            path = base / name
+    seen_files: set[str] = set()
+    walk_roots: list[Path] = []
+    direct_files: list[Path] = []
+    if selected_paths is None:
+        walk_roots = [root]
+    else:
+        for relative in selected_paths:
             try:
-                attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) if os.name == "nt" else 0
-                if path.is_symlink() or (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                candidate = resolve_under(root, relative)
+                if is_link_or_reparse(candidate):
                     skipped += 1
-                    findings.append(PreflightFinding(str(path), "warning", "REPARSE_OR_SYMLINK_SKIPPED", "Directory link/reparse point was not followed"))
-                    continue
-                kept_dirs.append(name)
-            except OSError as exc:
-                skipped += 1
-                findings.append(PreflightFinding(str(path), "error", "DIRECTORY_UNREADABLE", str(exc)))
-        dirs[:] = kept_dirs
-        for name in names:
-            path = base / name
-            try:
-                attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) if os.name == "nt" else 0
-                if path.is_symlink() or not path.is_file() or (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                    findings.append(PreflightFinding(str(candidate), "warning", "REPARSE_OR_SYMLINK_SKIPPED",
+                                                     "Selected link/reparse point was not followed"))
+                elif candidate.is_dir():
+                    walk_roots.append(candidate)
+                elif candidate.is_file():
+                    direct_files.append(candidate)
+                else:
                     skipped += 1
-                    findings.append(PreflightFinding(str(path), "warning", "NON_REGULAR_OR_REPARSE", "Non-regular, link or reparse-point file was skipped"))
-                    continue
-                size = path.stat().st_size
-                with path.open("rb") as stream:
-                    stream.read(1)
-                files += 1
-                total_bytes += size
-            except OSError as exc:
+                    findings.append(PreflightFinding(str(candidate), "warning", "SELECTED_PATH_MISSING",
+                                                     "Selected path no longer exists"))
+            except (OSError, ValueError) as exc:
                 skipped += 1
-                findings.append(PreflightFinding(str(path), "error", "FILE_UNREADABLE", str(exc)))
+                findings.append(PreflightFinding(str(relative), "error", "INVALID_SELECTED_PATH", str(exc)))
+
+    def check_file(path: Path) -> None:
+        nonlocal files, total_bytes, skipped
+        identity = str(path.resolve(strict=False)).casefold()
+        if identity in seen_files:
+            return
+        seen_files.add(identity)
+        try:
+            if is_link_or_reparse(path) or not path.is_file():
+                skipped += 1
+                findings.append(PreflightFinding(str(path), "warning", "NON_REGULAR_OR_REPARSE",
+                                                 "Non-regular, link or reparse-point file was skipped"))
+                return
+            size = path.stat().st_size
+            with path.open("rb") as stream:
+                stream.read(1)
+            files += 1
+            total_bytes += size
+        except OSError as exc:
+            skipped += 1
+            findings.append(PreflightFinding(str(path), "error", "FILE_UNREADABLE", str(exc)))
+
+    for path in direct_files:
+        check_file(path)
+
+    for scan_root in walk_roots:
+        for current, dirs, names in os.walk(scan_root, followlinks=False):
+            base = Path(current)
+            kept_dirs = []
+            for name in dirs:
+                path = base / name
+                if is_link_or_reparse(path):
+                    skipped += 1
+                    findings.append(PreflightFinding(str(path), "warning", "REPARSE_OR_SYMLINK_SKIPPED",
+                                                     "Directory link/reparse point was not followed"))
+                else:
+                    kept_dirs.append(name)
+            dirs[:] = kept_dirs
+            for name in names:
+                check_file(base / name)
     if package_target is not None:
         target_parent = Path(package_target).expanduser().absolute().parent
         try:
