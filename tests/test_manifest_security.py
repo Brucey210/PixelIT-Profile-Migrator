@@ -13,7 +13,8 @@ def _record(path: str, size: int = 0) -> dict:
 @pytest.mark.parametrize(
     "path",
     ["", "../secret.txt", "folder/../../secret.txt", r"C:\\Windows\\win.ini",
-     r"\\server\\share\\file", "/etc/passwd", "folder//file", "folder/./file", "a:b"],
+     r"\\server\\share\\file", "/etc/passwd", "folder//file", "folder/./file", "a:b",
+     "CON", "folder/NUL.txt", "name.", "trailing ", "bad?.txt", "bad|name.txt"],
 )
 def test_rejects_unsafe_relative_paths(path):
     with pytest.raises(ValueError):
