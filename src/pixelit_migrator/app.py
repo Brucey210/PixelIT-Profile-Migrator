@@ -218,6 +218,7 @@ class MigratorWindow(QMainWindow):
         output = Path(self.output.text().strip())
         passphrase = self.passphrase.text()
         selected = [check.text() for check in self.folder_checks if check.isChecked()]
+        include_outlook = self.include_outlook.isChecked()
         job_id = self.job_id.text().strip() or None
         if not source.is_dir() or not output.name or not selected:
             QMessageBox.warning(self, "Missing information", "Choose a source, output package and at least one folder.")
@@ -237,7 +238,7 @@ class MigratorWindow(QMainWindow):
                 )
                 raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
             selected_paths = list(selected)
-            if self.include_outlook.isChecked():
+            if include_outlook:
                 outlook = discover_outlook(source)
                 source_resolved = source.resolve(strict=True)
                 for category in ("pst", "signatures", "templates"):
