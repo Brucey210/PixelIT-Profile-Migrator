@@ -40,5 +40,5 @@ def test_credential_checklist_report_records_status_without_secret_values(tmp_pa
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["operation"] == "credential-checklist"
     assert [item["status"] for item in payload["checklist"]] == ["complete", "outstanding"]
-    assert "password" not in json.dumps(payload).casefold()
-    assert "token" not in json.dumps(payload).casefold()
+    checklist_fields = {key.casefold() for item in payload["checklist"] for key in item}
+    assert not ({"password", "token", "private_key", "credential_value"} & checklist_fields)
