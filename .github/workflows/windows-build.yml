@@ -22,12 +22,25 @@ jobs:
         run: python -m pytest -v
       - name: Build portable folder
         run: pyinstaller --noconfirm --clean --windowed --name PixelIT-Profile-Migrator --collect-all cryptography --collect-all PySide6 --paths src main.py
-      - name: Include technician documentation
+      - name: Verify portable executable and create SHA-256 checksums
         shell: pwsh
         run: |
-          Copy-Item README.md dist/PixelIT-Profile-Migrator/README.md
-          Copy-Item SECURITY.md dist/PixelIT-Profile-Migrator/SECURITY.md
-          Copy-Item BUILD_WINDOWS.md dist/PixelIT-Profile-Migrator/BUILD_WINDOWS.md
+          $root = (Resolve-Path "dist/PixelIT-Profile-Migrator").Path
+          $exe = Join-Path $root "PixelIT-Profile-Migrator.exe"
+          if (-not (Test-Path $exe -PathType Leaf)) {
+            throw "PyInstaller executable was not produced at the expected path."
+          }
+          Copy-Item README.md (Join-Path $root "README.md")
+          Copy-Item SECURITY.md (Join-Path $root "SECURITY.md")
+          Copy-Item BUILD_WINDOWS.md (Join-Path $root "BUILD_WINDOWS.md")
+          $lines = Get-ChildItem -Path $root -File -Recurse |
+            Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            ForEach-Object {
+              $relative = [System.IO.Path]::GetRelativePath($root, $_.FullName)
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              "$($hash.Hash.ToLower())  $relative"
+            }
+          $lines | Set-Content -Encoding utf8 (Join-Path $root "SHA256SUMS.txt")
       - uses: actions/upload-artifact@v4
         with:
           name: PixelIT-Profile-Migrator-Windows-Alpha
