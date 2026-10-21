@@ -265,8 +265,11 @@ class MigratorWindow(QMainWindow):
         selected = [check.text() for check in self.folder_checks if check.isChecked()]
         include_outlook = self.include_outlook.isChecked()
         job_id = self.job_id.text().strip() or None
-        if not source.is_dir() or not output.name or not selected:
-            QMessageBox.warning(self, "Missing information", "Choose a source, output package and at least one folder.")
+        if not source.is_dir() or not output.name or (not selected and not include_outlook):
+            QMessageBox.warning(
+                self, "Missing information",
+                "Choose a source, output package and at least one folder or discovered Outlook data."
+            )
             return
         if len(passphrase) < 12:
             QMessageBox.warning(self, "Passphrase too short", "Use a unique passphrase of at least 12 characters.")
