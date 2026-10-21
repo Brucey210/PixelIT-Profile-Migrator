@@ -85,8 +85,15 @@ def run_preflight(
     for path in direct_files:
         check_file(path)
 
+    def walk_error(error: OSError) -> None:
+        nonlocal skipped
+        skipped += 1
+        findings.append(PreflightFinding(
+            str(getattr(error, "filename", "") or root), "error", "DIRECTORY_UNREADABLE", str(error)
+        ))
+
     for scan_root in walk_roots:
-        for current, dirs, names in os.walk(scan_root, followlinks=False):
+        for current, dirs, names in os.walk(scan_root, followlinks=False, onerror=walk_error):
             base = Path(current)
             kept_dirs = []
             for name in dirs:
