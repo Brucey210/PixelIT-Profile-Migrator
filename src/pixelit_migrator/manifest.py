@@ -17,6 +17,8 @@ def is_link_or_reparse(path: Path) -> bool:
     try:
         if path.is_symlink():
             return True
+        if not path.exists():
+            return False
         if os.name == "nt":
             attrs = getattr(path.lstat(), "st_file_attributes", 0)
             return bool(attrs & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
