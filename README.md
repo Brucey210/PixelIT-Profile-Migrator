@@ -11,7 +11,7 @@ Portable Windows profile migration toolkit for Pixel IT technicians.
 - Scrypt-derived AES-256-GCM key wrapping and chunked per-file AES-GCM encryption, with bounded-memory processing for large files.
 - Encrypted manifest with file sizes and SHA-256 hashes; package inspection authenticates every payload.
 - Restore preview, conflict skipping by default, hash verification, and atomic staging for individual files.
-- Credential-handling checklist that directs technicians to vendor-supported transfer and reauthentication; no secret-store scraping.
+- Exportable credential-handling checklist report that directs technicians to vendor-supported transfer and reauthentication; no secret-store scraping or credential values stored in the report.
 - JSON technician reports for package creation and restore.
 - GitHub Actions tests on Windows and Ubuntu, a manual Windows portable-folder build workflow, and scheduled dependency vulnerability auditing.
 - Strict manifest checks for traversal, case-insensitive duplicates, file/directory collisions, invalid Windows names, and malformed sizes.
