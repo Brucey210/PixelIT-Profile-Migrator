@@ -2,7 +2,7 @@
 
 1. Obtain customer authorisation, assign a job ID, and confirm an independent verified backup exists.
 2. Launch the application on a development/test machine. Select the source profile root (normally the user's profile directory).
-3. Select common folders to package. The tool currently includes folder trees by relative path; review scope carefully.
+3. Select common folders to package. The Outlook-data checkbox is enabled by default and adds discovered PSTs, signatures and templates by relative path; review scope carefully.
 4. Run preflight and Outlook discovery. The preflight is advisory and cannot prove cloud placeholders are hydrated or Windows metadata will be preserved.
 5. Choose an output path on approved encrypted storage and use a unique strong passphrase (12+ characters). Store the passphrase separately from the package.
 6. Create the package and save the technician JSON report. Keep the source untouched.
@@ -14,7 +14,7 @@
 
 ## Important limitations
 
-- This alpha implementation buffers whole files in memory during package creation and restore; large profiles/PST files may exceed RAM.
+- Package creation and restore use bounded-memory 1 MiB authenticated encryption chunks. Large profile scans still take time; test representative PSTs and verify disk capacity.
 - It does not preserve ACLs, owners, EFS semantics, alternate data streams, all timestamps, Windows registry settings, or every application profile.
 - Windows junctions/reparse points, OneDrive/cloud placeholders, locked files, long paths, and races between preview and restore need Windows-specific hardening.
 - No durable resume journal or full rollback is implemented.
