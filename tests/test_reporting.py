@@ -11,3 +11,34 @@ def test_report_is_written_without_secret_fields(tmp_path: Path):
     assert payload["files_created"] == ["Documents/a.txt"]
     assert "passphrase" not in payload
     assert payload["schema_version"] == 1
+
+
+def test_credential_checklist_report_records_status_without_secret_values(tmp_path: Path):
+    from pixelit_migrator.reporting import write_credential_checklist_report
+
+    target = tmp_path / "credentials.json"
+    write_credential_checklist_report(
+        target,
+        job_id="JOB-CRED",
+        items=[
+            {
+                "key": "m365",
+                "title": "Microsoft 365",
+                "instructions": "Sign in again and complete MFA.",
+                "requires_customer_authorisation": True,
+                "complete": True,
+            },
+            {
+                "key": "wifi",
+                "title": "Wi-Fi",
+                "instructions": "Use approved Windows workflow.",
+                "requires_customer_authorisation": True,
+                "complete": False,
+            },
+        ],
+    )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["operation"] == "credential-checklist"
+    assert [item["status"] for item in payload["checklist"]] == ["complete", "outstanding"]
+    assert "password" not in json.dumps(payload).casefold()
+    assert "token" not in json.dumps(payload).casefold()
