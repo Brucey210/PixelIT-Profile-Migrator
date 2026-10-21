@@ -45,6 +45,15 @@ def _aad(path: str, counter: int) -> bytes:
     return path.encode("utf-8") + b"\x00pixelit-chunk-v1\x00" + counter.to_bytes(4, "big")
 
 
+def _unique_nonce_prefix(used: set[bytes], forbidden: bytes) -> bytes:
+    """Allocate a unique per-file nonce prefix under the package data key."""
+    prefix = os.urandom(_NONCE_PREFIX_LEN)
+    while prefix in used or prefix == forbidden:
+        prefix = os.urandom(_NONCE_PREFIX_LEN)
+    used.add(prefix)
+    return prefix
+
+
 def _read_exact(stream: BinaryIO, length: int) -> bytes:
     chunks = bytearray()
     while len(chunks) < length:
@@ -138,13 +147,11 @@ def create_package(source_root: Path, output_path: Path, manifest: MigrationMani
             aes = AESGCM(data_key)
             # A unique prefix per file guarantees chunk nonces do not repeat under
             # the same data key, including the separately encrypted manifest nonce.
-            used_prefixes = {manifest_nonce[:_NONCE_PREFIX_LEN]}
+            used_prefixes: set[bytes] = set()
+            forbidden_prefix = manifest_nonce[:_NONCE_PREFIX_LEN]
             total = len(manifest.records)
             for index, record in enumerate(manifest.records, start=1):
-                prefix = os.urandom(_NONCE_PREFIX_LEN)
-                while prefix in used_prefixes:
-                    prefix = os.urandom(_NONCE_PREFIX_LEN)
-                used_prefixes.add(prefix)
+                prefix = _unique_nonce_prefix(used_prefixes, forbidden_prefix)
                 _encrypt_file(source_root, record, archive, aes, prefix)
                 if progress:
                     progress(index, total, record.path)
