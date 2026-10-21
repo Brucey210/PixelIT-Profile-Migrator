@@ -107,3 +107,37 @@ def test_package_rejects_non_object_header_before_key_derivation(tmp_path: Path)
         archive.writestr("manifest.bin", b"not-a-manifest")
     with pytest.raises(ValueError, match="Invalid package header"):
         inspect_package(package, "long test passphrase 123")
+
+
+def test_package_uses_distinct_file_nonce_prefixes(tmp_path: Path, monkeypatch):
+    import zipfile
+    import pixelit_migrator.crypto_package as crypto
+
+    source = tmp_path / "source"; source.mkdir()
+    (source / "a.bin").write_bytes(b"")
+    (source / "b.bin").write_bytes(b"")
+    empty_hash = hashlib.sha256(b"").hexdigest()
+    manifest = MigrationManifest(
+        "NONCE-1", "2026-01-01T00:00:00+00:00", "TEST-PC",
+        (FileRecord("a.bin", 0, empty_hash), FileRecord("b.bin", 0, empty_hash)),
+    )
+    package = tmp_path / "nonce.pitpkg"
+    values = {
+        16: [b"s" * 16],
+        12: [b"w" * 12, b"m" * 12],
+        8: [b"p" * 8, b"p" * 8, b"q" * 8],
+    }
+
+    def predictable_urandom(length: int) -> bytes:
+        return values[length].pop(0)
+
+    monkeypatch.setattr(crypto.os, "urandom", predictable_urandom)
+    create_package(source, package, manifest, "long test passphrase 123")
+
+    with zipfile.ZipFile(package, "r") as archive:
+        a_prefix = archive.read("files/a.bin")[:8]
+        b_prefix = archive.read("files/b.bin")[:8]
+        manifest_nonce_prefix = archive.read("manifest.bin")[:8]
+    assert a_prefix == b"p" * 8
+    assert b_prefix == b"q" * 8
+    assert len({a_prefix, b_prefix, manifest_nonce_prefix}) == 3
