@@ -55,6 +55,17 @@ class MigratorWindow(QMainWindow):
         self.setCentralWidget(tabs)
         self.statusBar().showMessage("Alpha build — verify an independent backup before use")
 
+
+    def closeEvent(self, event) -> None:
+        if self._active_thread is not None:
+            QMessageBox.warning(
+                self, "Migration in progress",
+                "Wait for the current operation to finish before closing Pixel IT Profile Migrator."
+            )
+            event.ignore()
+            return
+        event.accept()
+
     def _build_create_tab(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page); form = QFormLayout()
         self.source = QLineEdit()
