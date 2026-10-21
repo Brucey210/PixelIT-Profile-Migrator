@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from .credential_workflow import CREDENTIAL_CHECKLIST
 from .crypto_package import create_package, inspect_package, restore_package
-from .inventory import USER_FOLDERS, build_manifest, discover_outlook
+from .inventory import USER_FOLDERS, build_manifest, discover_outlook, outlook_relative_paths
 from .manifest import resolve_under
 from .preflight import run_preflight
 from .reporting import write_job_report
@@ -93,7 +93,7 @@ class MigratorWindow(QMainWindow):
         self.create_log = QPlainTextEdit(); self.create_log.setReadOnly(True); layout.addWidget(self.create_log, 1)
         create = QPushButton("Create encrypted package"); create.clicked.connect(self._create_package); layout.addWidget(create)
         self.create_button = create
-        note = QLabel("ALPHA: selected folders only; Windows metadata, cloud placeholders and very large files require additional handling. Test restores before customer use.")
+        note = QLabel("ALPHA: selected folders plus discovered Outlook PSTs/signatures/templates when enabled. Windows metadata and cloud placeholders require additional handling. Test restores before customer use.")
         note.setWordWrap(True); layout.addWidget(note)
         return page
 
@@ -239,16 +239,7 @@ class MigratorWindow(QMainWindow):
                 raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
             selected_paths = list(selected)
             if include_outlook:
-                outlook = discover_outlook(source)
-                source_resolved = source.resolve(strict=True)
-                for category in ("pst", "signatures", "templates"):
-                    for found_path in outlook[category]:
-                        try:
-                            relative = Path(found_path).resolve(strict=True).relative_to(source_resolved).as_posix()
-                            selected_paths.append(relative)
-                        except (OSError, ValueError):
-                            # Ignore paths that vanished or no longer resolve under the selected profile.
-                            continue
+                selected_paths.extend(outlook_relative_paths(source))
             manifest = build_manifest(source, selected_paths, job_id)
             if not manifest.records:
                 raise ValueError("No files were found in the selected folders or Outlook locations.")
