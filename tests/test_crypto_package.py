@@ -37,3 +37,41 @@ def test_existing_destination_is_skipped(tmp_path: Path):
     report = restore_package(package, destination, "long test passphrase 123")
     assert report["skipped"][0]["path"] == "file.txt"
     assert (destination / "file.txt").read_bytes() == b"keep me"
+
+
+def test_package_authentication_rejects_modified_ciphertext(tmp_path: Path):
+    import zipfile
+
+    source = tmp_path / "source"; source.mkdir()
+    (source / "note.txt").write_bytes(b"authenticated payload")
+    payload = b"authenticated payload"
+    record = FileRecord("note.txt", len(payload), hashlib.sha256(payload).hexdigest())
+    manifest = MigrationManifest("TAMPER-1", "2026-01-01T00:00:00+00:00", "TEST-PC", (record,))
+    package = tmp_path / "original.pitpkg"
+    create_package(source, package, manifest, "long test passphrase 123")
+
+    tampered = tmp_path / "tampered.pitpkg"
+    with zipfile.ZipFile(package, "r") as original, zipfile.ZipFile(tampered, "w") as changed:
+        for info in original.infolist():
+            data = original.read(info.filename)
+            if info.filename == "files/note.txt":
+                data = data[:-1] + bytes([data[-1] ^ 1])
+            changed.writestr(info.filename, data)
+
+    with pytest.raises(Exception):
+        inspect_package(tampered, "long test passphrase 123")
+
+
+def test_failed_package_creation_does_not_replace_existing_output(tmp_path: Path):
+    source = tmp_path / "source"; source.mkdir()
+    (source / "note.txt").write_bytes(b"changed")
+    record = FileRecord("note.txt", 8, hashlib.sha256(b"original").hexdigest())
+    manifest = MigrationManifest("CHANGED-1", "2026-01-01T00:00:00+00:00", "TEST-PC", (record,))
+    package = tmp_path / "existing.pitpkg"
+    package.write_bytes(b"existing known-good output")
+
+    with pytest.raises(ValueError, match="Source changed"):
+        create_package(source, package, manifest, "long test passphrase 123")
+
+    assert package.read_bytes() == b"existing known-good output"
+    assert not package.with_name(package.name + ".partial").exists()
