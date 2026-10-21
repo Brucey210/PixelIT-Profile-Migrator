@@ -19,5 +19,6 @@ def test_main_window_constructs_three_workflow_tabs():
         "Outlook & credentials",
     ]
     assert "Alpha" in window.windowTitle()
+    assert window.include_outlook.isChecked()
     window.close()
     app.processEvents()
