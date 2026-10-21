@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit,
@@ -19,9 +19,31 @@ from .preflight import run_preflight
 from .reporting import write_job_report
 
 
+class _OperationWorker(QObject):
+    progress = Signal(int, int, str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, operation) -> None:
+        super().__init__()
+        self.operation = operation
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(self.operation(self.progress.emit))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        finally:
+            self.finished.emit()
+
+
 class MigratorWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._active_thread = None
+        self._active_worker = None
         self.setWindowTitle("Pixel IT Profile Migrator — Alpha")
         self.resize(980, 720)
         tabs = QTabWidget()
@@ -65,6 +87,7 @@ class MigratorWindow(QMainWindow):
         self.progress = QProgressBar(); self.progress.setRange(0, 100); layout.addWidget(self.progress)
         self.create_log = QPlainTextEdit(); self.create_log.setReadOnly(True); layout.addWidget(self.create_log, 1)
         create = QPushButton("Create encrypted package"); create.clicked.connect(self._create_package); layout.addWidget(create)
+        self.create_button = create
         note = QLabel("ALPHA: selected folders only; Windows metadata, cloud placeholders and very large files require additional handling. Test restores before customer use.")
         note.setWordWrap(True); layout.addWidget(note)
         return page
@@ -83,6 +106,7 @@ class MigratorWindow(QMainWindow):
         preview = QPushButton("Inspect package and preview conflicts"); preview.clicked.connect(self._preview_restore); layout.addWidget(preview)
         self.restore_log = QPlainTextEdit(); self.restore_log.setReadOnly(True); layout.addWidget(self.restore_log, 1)
         restore = QPushButton("Restore non-conflicting files"); restore.clicked.connect(self._restore); layout.addWidget(restore)
+        self.restore_button = restore
         self.restore_manifest = None
         return page
 
@@ -146,38 +170,103 @@ class MigratorWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Preflight failed", str(exc))
 
+    def _start_worker(self, operation, on_success, on_failure, progress_handler=None) -> None:
+        if self._active_thread is not None:
+            QMessageBox.warning(self, "Operation in progress", "Wait for the current migration operation to finish.")
+            return
+        self.centralWidget().setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        thread = QThread(self)
+        worker = _OperationWorker(operation)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_failure)
+        if progress_handler is not None:
+            worker.progress.connect(progress_handler)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._worker_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_thread = thread
+        self._active_worker = worker
+        thread.start()
+
+    @Slot()
+    def _worker_finished(self) -> None:
+        QApplication.restoreOverrideCursor()
+        self.centralWidget().setEnabled(True)
+        self.passphrase.clear()
+        self.restore_passphrase.clear()
+        self._active_thread = None
+        self._active_worker = None
+
+    @Slot(int, int, str)
+    def _create_progress(self, index: int, total: int, path: str) -> None:
+        self.progress.setValue(int(index * 100 / max(total, 1)))
+        self.statusBar().showMessage(f"Packaging {index}/{total}: {path}")
+
+    @Slot(int, int, str)
+    def _restore_progress(self, index: int, total: int, path: str) -> None:
+        self.statusBar().showMessage(f"Restoring {index}/{total}: {path}")
+
     def _create_package(self) -> None:
-        source = Path(self.source.text().strip()); output = Path(self.output.text().strip())
-        passphrase = self.passphrase.text(); selected = [c.text() for c in self.folder_checks if c.isChecked()]
+        source = Path(self.source.text().strip())
+        output = Path(self.output.text().strip())
+        passphrase = self.passphrase.text()
+        selected = [check.text() for check in self.folder_checks if check.isChecked()]
+        job_id = self.job_id.text().strip() or None
         if not source.is_dir() or not output.name or not selected:
-            QMessageBox.warning(self, "Missing information", "Choose a source, output package and at least one folder."); return
+            QMessageBox.warning(self, "Missing information", "Choose a source, output package and at least one folder.")
+            return
         if len(passphrase) < 12:
-            QMessageBox.warning(self, "Passphrase too short", "Use a unique passphrase of at least 12 characters."); return
-        try:
+            QMessageBox.warning(self, "Passphrase too short", "Use a unique passphrase of at least 12 characters.")
+            return
+        self.progress.setValue(0)
+        self.create_log.setPlainText("Preflight and inventory scan running…")
+
+        def operation(progress):
             preflight = run_preflight(source, output)
             if not preflight["ready"]:
-                QMessageBox.warning(self, "Preflight warnings", "Preflight found blocking errors. Review the log and correct them before packaging.")
-                self._run_preflight(); return
-            manifest = build_manifest(source, selected, self.job_id.text().strip() or None)
+                details = "\n".join(
+                    f"{item['severity'].upper()} {item['code']}: {item['path']} — {item['message']}"
+                    for item in preflight["findings"]
+                )
+                raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
+            manifest = build_manifest(source, selected, job_id)
             if not manifest.records:
-                QMessageBox.warning(self, "No files found", "No files were found in the selected folders."); return
-            self.create_log.setPlainText(f"Job: {manifest.job_id}\nFiles: {len(manifest.records)}\nBuilding encrypted package…")
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            create_package(source, output, manifest, passphrase,
-                           progress=lambda i, total, path: self.progress.setValue(int(i * 100 / max(total, 1))))
-            self.create_log.appendPlainText(f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}\nRun a test restore before relying on this package.")
-            QMessageBox.information(self, "Package created", "Encrypted package created. Inspect it and perform a test restore to a separate folder.")
-            suggested = f"PixelIT-Job-{manifest.job_id}-package-report.json"
-            report_path, _ = QFileDialog.getSaveFileName(self, "Save technician package report", suggested, "JSON report (*.json)")
-            if report_path:
-                write_job_report(Path(report_path), job_id=manifest.job_id, operation="package-create",
-                                 source_label=manifest.source_computer, destination_label=output.name,
-                                 discovered=len(manifest.records), verification="package-created; test-restore-required")
-                self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
-        except Exception as exc:
-            self.create_log.appendPlainText(f"ERROR: {exc}"); QMessageBox.critical(self, "Package failed", str(exc))
-        finally:
-            QApplication.restoreOverrideCursor(); self.passphrase.clear()
+                raise ValueError("No files were found in the selected folders.")
+            create_package(source, output, manifest, passphrase, progress=progress)
+            return {"manifest": manifest, "output": output}
+
+        self._start_worker(operation, self._create_succeeded, self._create_failed, self._create_progress)
+
+    def _create_failed(self, message: str) -> None:
+        self.create_log.appendPlainText(f"\nERROR: {message}")
+        QMessageBox.critical(self, "Package failed", message)
+
+    def _create_succeeded(self, result: dict) -> None:
+        manifest = result["manifest"]
+        output = result["output"]
+        self.create_log.appendPlainText(
+            f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}"
+            "\nRun a test restore before relying on this package."
+        )
+        QMessageBox.information(
+            self, "Package created",
+            "Encrypted package created. Inspect it and perform a test restore to a separate folder."
+        )
+        suggested = f"PixelIT-Job-{manifest.job_id}-package-report.json"
+        report_path, _ = QFileDialog.getSaveFileName(
+            self, "Save technician package report", suggested, "JSON report (*.json)"
+        )
+        if report_path:
+            write_job_report(
+                Path(report_path), job_id=manifest.job_id, operation="package-create",
+                source_label=manifest.source_computer, destination_label=output.name,
+                discovered=len(manifest.records), verification="package-created; test-restore-required"
+            )
+            self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
 
     def _preview_restore(self) -> None:
         package = Path(self.package_path.text().strip()); destination = Path(self.destination.text().strip())
@@ -201,32 +290,56 @@ class MigratorWindow(QMainWindow):
 
     def _restore(self) -> None:
         if self.restore_manifest is None:
-            QMessageBox.warning(self, "Preview required", "Inspect the package and preview conflicts first."); return
-        if QMessageBox.question(self, "Confirm restore", "Restore files that do not already exist? Existing files will be skipped. Continue?") != QMessageBox.Yes:
+            QMessageBox.warning(self, "Preview required", "Inspect the package and preview conflicts first.")
             return
-        try:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            report = restore_package(Path(self.package_path.text().strip()), Path(self.destination.text().strip()),
-                                     self.restore_passphrase.text(), overwrite_paths=set(),
-                                     progress=lambda i, total, path: self.statusBar().showMessage(f"Restoring {i}/{total}: {path}"))
-            self.restore_log.appendPlainText("\n\nRESTORE REPORT\n" + f"Created: {len(report['created'])}\nSkipped: {len(report['skipped'])}\nErrors: {len(report['errors'])}")
-            for section in ("skipped", "errors"):
-                for item in report[section]: self.restore_log.appendPlainText(f"{section.upper()}: {item}")
-            QMessageBox.information(self, "Restore finished", f"Created {len(report['created'])} files. Skipped {len(report['skipped'])}. Errors {len(report['errors'])}. Review the report.")
-            suggested = f"PixelIT-Job-{self.restore_manifest.job_id}-restore-report.json"
-            report_path, _ = QFileDialog.getSaveFileName(self, "Save technician report", suggested, "JSON report (*.json)")
-            if report_path:
-                write_job_report(Path(report_path), job_id=self.restore_manifest.job_id, operation="restore",
-                                 source_label=self.restore_manifest.source_computer,
-                                 destination_label=Path(self.destination.text().strip()).name,
-                                 discovered=len(self.restore_manifest.records), created=report["created"],
-                                 overwritten=report["overwritten"], skipped=report["skipped"], errors=report["errors"],
-                                 verification=("package-authenticated; restore-errors-present" if report["errors"] else "package-authenticated; restored-files-verified"))
-                self.restore_log.appendPlainText(f"\nTechnician report saved: {report_path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Restore failed", str(exc))
-        finally:
-            QApplication.restoreOverrideCursor(); self.restore_passphrase.clear()
+        if QMessageBox.question(
+            self, "Confirm restore",
+            "Restore files that do not already exist? Existing files will be skipped. Continue?"
+        ) != QMessageBox.Yes:
+            return
+        package = Path(self.package_path.text().strip())
+        destination = Path(self.destination.text().strip())
+        passphrase = self.restore_passphrase.text()
+        manifest = self.restore_manifest
+        self.restore_log.appendPlainText("\nRestore started…")
+
+        def operation(progress):
+            return restore_package(package, destination, passphrase, overwrite_paths=set(), progress=progress)
+
+        self._start_worker(operation, lambda report: self._restore_succeeded(report, manifest, destination),
+                           self._restore_failed, self._restore_progress)
+
+    def _restore_failed(self, message: str) -> None:
+        self.restore_log.appendPlainText(f"\nRESTORE FAILED: {message}")
+        QMessageBox.critical(self, "Restore failed", message)
+
+    def _restore_succeeded(self, report: dict, manifest, destination: Path) -> None:
+        self.restore_log.appendPlainText(
+            "\n\nRESTORE REPORT\n"
+            + f"Created: {len(report['created'])}\nSkipped: {len(report['skipped'])}\nErrors: {len(report['errors'])}"
+        )
+        for section in ("skipped", "errors"):
+            for item in report[section]:
+                self.restore_log.appendPlainText(f"{section.upper()}: {item}")
+        QMessageBox.information(
+            self, "Restore finished",
+            f"Created {len(report['created'])} files. Skipped {len(report['skipped'])}. "
+            f"Errors {len(report['errors'])}. Review the report."
+        )
+        suggested = f"PixelIT-Job-{manifest.job_id}-restore-report.json"
+        report_path, _ = QFileDialog.getSaveFileName(
+            self, "Save technician report", suggested, "JSON report (*.json)"
+        )
+        if report_path:
+            write_job_report(
+                Path(report_path), job_id=manifest.job_id, operation="restore",
+                source_label=manifest.source_computer, destination_label=destination.name,
+                discovered=len(manifest.records), created=report["created"],
+                overwritten=report["overwritten"], skipped=report["skipped"], errors=report["errors"],
+                verification=("package-authenticated; restore-errors-present" if report["errors"]
+                              else "package-authenticated; restored-files-verified")
+            )
+            self.restore_log.appendPlainText(f"\nTechnician report saved: {report_path}")
 
 
 def main() -> int:
