@@ -156,11 +156,22 @@ def _unlock(archive: zipfile.ZipFile, passphrase: str) -> tuple[bytes, Migration
         raise ValueError("Archive contains duplicate entry names")
     if any(info.flag_bits & 0x1 for info in infos):
         raise ValueError("Unexpected ZIP-level encryption")
+    info_by_name = {info.filename: info for info in infos}
+    if "header.json" not in info_by_name or "manifest.bin" not in info_by_name:
+        raise ValueError("Package is missing required metadata")
+    if any(info.compress_type != zipfile.ZIP_STORED for info in infos):
+        raise ValueError("Unsupported compressed package entry")
+    if info_by_name["header.json"].file_size > 64 * 1024:
+        raise ValueError("Package header exceeds the safety limit")
+    if info_by_name["manifest.bin"].file_size > 64 * 1024 * 1024 + NONCE_LEN + _TAG_LEN:
+        raise ValueError("Encrypted manifest exceeds the safety limit")
     raw_header = archive.read("header.json")
     if not raw_header.startswith(MAGIC):
         raise ValueError("Not a Pixel IT package")
     try:
         header = json.loads(raw_header[len(MAGIC):].decode("utf-8"))
+        if not isinstance(header, dict):
+            raise ValueError("Invalid package header object")
         if header.get("v") != 1 or header.get("file_format") != "chunked-aesgcm-v1":
             raise ValueError("Unsupported package/file format version")
         salt = bytes.fromhex(header["salt"])
@@ -168,7 +179,7 @@ def _unlock(archive: zipfile.ZipFile, passphrase: str) -> tuple[bytes, Migration
         wrapped_key = bytes.fromhex(header["wrapped_key"])
         if len(salt) != SALT_LEN or len(nonce) != NONCE_LEN or len(wrapped_key) != KEY_LEN + _TAG_LEN:
             raise ValueError("Invalid package key header")
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
         raise ValueError("Invalid package header") from exc
     wrapping_key = _derive(passphrase, salt)
     try:
