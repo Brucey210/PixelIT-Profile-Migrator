@@ -68,9 +68,11 @@ class FileRecord:
 
     def validate(self) -> None:
         validate_relative_path(self.path)
-        if self.size < 0:
-            raise ValueError("Negative file size")
-        if len(self.sha256) != 64 or any(c not in "0123456789abcdef" for c in self.sha256.lower()):
+        if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size < 0:
+            raise ValueError(f"Invalid file size for {self.path}")
+        if not isinstance(self.sha256, str) or len(self.sha256) != 64 or any(
+            c not in "0123456789abcdef" for c in self.sha256.lower()
+        ):
             raise ValueError(f"Invalid SHA-256 for {self.path}")
 
 
@@ -89,17 +91,34 @@ class MigrationManifest:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "MigrationManifest":
+        # Prevent an authenticated-but-malformed package from causing unbounded
+        # manifest parsing work before we validate individual records.
+        if len(data) > 64 * 1024 * 1024:
+            raise ValueError("Manifest exceeds the 64 MiB safety limit")
         try:
             obj: dict[str, Any] = json.loads(data.decode("utf-8"))
             if not isinstance(obj, dict) or obj.get("version") != MANIFEST_VERSION:
                 raise ValueError("Unsupported or invalid manifest version")
-            records = tuple(FileRecord(**row) for row in obj["records"])
+            rows = obj.get("records")
+            if not isinstance(rows, list) or len(rows) > 1_000_000:
+                raise ValueError("Invalid or oversized manifest record list")
+            records = tuple(FileRecord(**row) for row in rows)
             for record in records:
                 record.validate()
+            # Windows filesystems are case-insensitive by default. Also reject a
+            # file used as the parent directory of another entry (e.g. a and a/b).
             paths = [r.path.casefold() for r in records]
-            if len(paths) != len(set(paths)):
+            path_set = set(paths)
+            if len(paths) != len(path_set):
                 raise ValueError("Duplicate paths in manifest")
-            return cls(str(obj["job_id"]), str(obj["created_utc"]), str(obj["source_computer"]), records, int(obj["version"]))
+            for path in paths:
+                parts = path.split("/")
+                if any("/".join(parts[:i]) in path_set for i in range(1, len(parts))):
+                    raise ValueError("Manifest contains conflicting file/directory paths")
+            for field in ("job_id", "created_utc", "source_computer"):
+                if not isinstance(obj.get(field), str) or not obj[field].strip():
+                    raise ValueError(f"Invalid manifest field: {field}")
+            return cls(obj["job_id"], obj["created_utc"], obj["source_computer"], records, obj["version"])
         except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid migration manifest") from exc
 
