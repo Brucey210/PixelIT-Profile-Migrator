@@ -5,17 +5,16 @@ wrapped using Scrypt-derived AES-GCM key encryption. Never log passphrases.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import secrets
 import zipfile
 from pathlib import Path
-from typing import Iterable
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from .manifest import FileRecord, MigrationManifest, resolve_under
+from .manifest import MigrationManifest, resolve_under
 
 MAGIC = b"PIXELITPKG1\n"
 SALT_LEN = 16
@@ -31,7 +30,11 @@ def _derive(passphrase: str, salt: bytes) -> bytes:
 
 def create_package(source_root: Path, output_path: Path, manifest: MigrationManifest,
                    passphrase: str, *, progress=None) -> None:
-    """Create encrypted archive; source is read only. Output is written atomically."""
+    """Create encrypted archive; source is read only. Output is written atomically.
+
+    Alpha limitation: each file is currently buffered in memory. Large-file streaming
+    encryption and bounded-memory processing are required before production use.
+    """
     source_root = source_root.resolve(strict=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     salt = os.urandom(SALT_LEN)
@@ -54,12 +57,11 @@ def create_package(source_root: Path, output_path: Path, manifest: MigrationMani
                 source = resolve_under(source_root, record.path)
                 if not source.is_file() or source.stat().st_size != record.size:
                     raise ValueError(f"Source changed since inventory: {record.path}")
-                nonce = os.urandom(NONCE_LEN)
                 with source.open("rb") as stream:
                     content = stream.read()
-                import hashlib
                 if hashlib.sha256(content).hexdigest() != record.sha256:
                     raise ValueError(f"Source changed since inventory: {record.path}")
+                nonce = os.urandom(NONCE_LEN)
                 encrypted = nonce + aes.encrypt(nonce, content, record.path.encode("utf-8"))
                 archive.writestr("files/" + record.path, encrypted)
                 if progress:
@@ -70,7 +72,6 @@ def create_package(source_root: Path, output_path: Path, manifest: MigrationMani
             temp.unlink(missing_ok=True)
         except OSError:
             pass
-        # Best-effort reference clearing; Python cannot guarantee memory erasure.
         data_key = b"\x00" * len(data_key)
 
 
@@ -94,33 +95,38 @@ def _unlock(archive: zipfile.ZipFile, passphrase: str) -> tuple[bytes, Migration
     return data_key, MigrationManifest.from_bytes(manifest)
 
 
+def _validate_entries(archive: zipfile.ZipFile, data_key: bytes, manifest: MigrationManifest) -> None:
+    expected = {"header.json", "manifest.bin"}
+    expected.update("files/" + r.path for r in manifest.records)
+    if set(archive.namelist()) != expected:
+        raise ValueError("Package entries do not match authenticated manifest")
+    aes = AESGCM(data_key)
+    for record in manifest.records:
+        encrypted = archive.read("files/" + record.path)
+        if len(encrypted) < NONCE_LEN + 16:
+            raise ValueError(f"Encrypted file entry is truncated: {record.path}")
+        content = aes.decrypt(encrypted[:NONCE_LEN], encrypted[NONCE_LEN:], record.path.encode("utf-8"))
+        if len(content) != record.size or hashlib.sha256(content).hexdigest() != record.sha256:
+            raise ValueError(f"File integrity verification failed: {record.path}")
+
+
 def inspect_package(package_path: Path, passphrase: str) -> MigrationManifest:
+    """Authenticate the manifest and every encrypted file before reporting package valid."""
     with zipfile.ZipFile(package_path, "r") as archive:
-        _, manifest = _unlock(archive, passphrase)
-        expected = {"header.json", "manifest.bin"}
-        expected.update("files/" + r.path for r in manifest.records)
-        if set(archive.namelist()) != expected:
-            raise ValueError("Package entries do not match authenticated manifest")
+        data_key, manifest = _unlock(archive, passphrase)
+        _validate_entries(archive, data_key, manifest)
         return manifest
 
 
 def restore_package(package_path: Path, destination_root: Path, passphrase: str,
                     *, overwrite_paths: set[str] | None = None, progress=None) -> dict:
-    """Restore with conflict protection and per-file authenticated verification.
-
-    overwrite_paths contains exact relative paths the operator explicitly approved.
-    A conflict without approval is skipped. Destination files are staged beside the
-    target and atomically replaced only after authentication and hash verification.
-    """
+    """Restore files, skipping conflicts unless explicitly approved for overwrite."""
     overwrite_paths = {p.replace("\\", "/") for p in (overwrite_paths or set())}
     destination_root = destination_root.resolve(strict=True)
     report = {"created": [], "overwritten": [], "skipped": [], "errors": []}
     with zipfile.ZipFile(package_path, "r") as archive:
         data_key, manifest = _unlock(archive, passphrase)
-        expected = {"header.json", "manifest.bin"}
-        expected.update("files/" + r.path for r in manifest.records)
-        if set(archive.namelist()) != expected:
-            raise ValueError("Package entries do not match authenticated manifest")
+        _validate_entries(archive, data_key, manifest)
         aes = AESGCM(data_key)
         for index, record in enumerate(manifest.records, start=1):
             try:
@@ -129,15 +135,10 @@ def restore_package(package_path: Path, destination_root: Path, passphrase: str,
                     report["skipped"].append({"path": record.path, "reason": "Destination exists; overwrite not approved"})
                     continue
                 encrypted = archive.read("files/" + record.path)
-                if len(encrypted) < NONCE_LEN + 16:
-                    raise ValueError("Encrypted file entry is truncated")
                 content = aes.decrypt(encrypted[:NONCE_LEN], encrypted[NONCE_LEN:], record.path.encode("utf-8"))
-                import hashlib
                 if len(content) != record.size or hashlib.sha256(content).hexdigest() != record.sha256:
                     raise ValueError("Decrypted file integrity check failed")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # Re-check destination after parent creation; reparse-point-safe
-                # Windows implementation is required before production release.
                 target = resolve_under(destination_root, record.path)
                 if target.exists() and record.path not in overwrite_paths:
                     report["skipped"].append({"path": record.path, "reason": "Destination appeared during restore"})
