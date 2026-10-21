@@ -55,13 +55,16 @@ def _read_exact(stream: BinaryIO, length: int) -> bytes:
     return bytes(chunks)
 
 
-def _encrypt_file(source_root: Path, record, archive: zipfile.ZipFile, aes: AESGCM) -> None:
+def _encrypt_file(
+    source_root: Path, record, archive: zipfile.ZipFile, aes: AESGCM, prefix: bytes
+) -> None:
     source = resolve_under(source_root, record.path)
     if not source.is_file() or source.stat().st_size != record.size:
         raise ValueError(f"Source changed since inventory: {record.path}")
     digest = hashlib.sha256()
     counter = 0
-    prefix = os.urandom(_NONCE_PREFIX_LEN)
+    if len(prefix) != _NONCE_PREFIX_LEN:
+        raise ValueError("Invalid per-file nonce prefix")
     with source.open("rb") as incoming, archive.open("files/" + record.path, "w", force_zip64=True) as outgoing:
         outgoing.write(prefix)
         while True:
@@ -133,9 +136,16 @@ def create_package(source_root: Path, output_path: Path, manifest: MigrationMani
             encrypted_manifest = AESGCM(data_key).encrypt(manifest_nonce, manifest.to_bytes(), b"manifest-v1")
             archive.writestr("manifest.bin", manifest_nonce + encrypted_manifest)
             aes = AESGCM(data_key)
+            # A unique prefix per file guarantees chunk nonces do not repeat under
+            # the same data key, including the separately encrypted manifest nonce.
+            used_prefixes = {manifest_nonce[:_NONCE_PREFIX_LEN]}
             total = len(manifest.records)
             for index, record in enumerate(manifest.records, start=1):
-                _encrypt_file(source_root, record, archive, aes)
+                prefix = os.urandom(_NONCE_PREFIX_LEN)
+                while prefix in used_prefixes:
+                    prefix = os.urandom(_NONCE_PREFIX_LEN)
+                used_prefixes.add(prefix)
+                _encrypt_file(source_root, record, archive, aes, prefix)
                 if progress:
                     progress(index, total, record.path)
         # Atomic replacement only after the complete archive has closed successfully.
