@@ -40,3 +40,18 @@ def test_outlook_paths_are_relative_and_can_be_added_to_package_manifest(tmp_pat
 
     manifest = build_manifest(profile, paths, "OUTLOOK-1")
     assert {record.path for record in manifest.records} == set(paths)
+
+
+def test_manifest_creation_fails_instead_of_silently_omitting_unreadable_file(tmp_path: Path, monkeypatch):
+    from pixelit_migrator.manifest import FileRecord
+    import pytest
+
+    profile = tmp_path / "profile"
+    _write(profile, "Documents/important.txt", b"important")
+
+    def fail_inventory(cls, root, file_path):
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(FileRecord, "from_file", classmethod(fail_inventory))
+    with pytest.raises(ValueError, match="Unable to inventory selected file"):
+        build_manifest(profile, ["Documents"], "INVENTORY-ERROR")
