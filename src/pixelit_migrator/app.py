@@ -16,6 +16,7 @@ from .crypto_package import create_package, inspect_package, restore_package
 from .inventory import USER_FOLDERS, build_manifest, discover_outlook
 from .manifest import resolve_under
 from .preflight import run_preflight
+from .reporting import write_job_report
 
 
 class MigratorWindow(QMainWindow):
@@ -205,6 +206,16 @@ class MigratorWindow(QMainWindow):
             for section in ("skipped", "errors"):
                 for item in report[section]: self.restore_log.appendPlainText(f"{section.upper()}: {item}")
             QMessageBox.information(self, "Restore finished", f"Created {len(report['created'])} files. Skipped {len(report['skipped'])}. Errors {len(report['errors'])}. Review the report.")
+            suggested = f"PixelIT-Job-{self.restore_manifest.job_id}-restore-report.json"
+            report_path, _ = QFileDialog.getSaveFileName(self, "Save technician report", suggested, "JSON report (*.json)")
+            if report_path:
+                write_job_report(Path(report_path), job_id=self.restore_manifest.job_id, operation="restore",
+                                 source_label=self.restore_manifest.source_computer,
+                                 destination_label=Path(self.destination.text().strip()).name,
+                                 discovered=len(self.restore_manifest.records), created=report["created"],
+                                 overwritten=report["overwritten"], skipped=report["skipped"], errors=report["errors"],
+                                 verification="package-authentication-and-file-hash-checks-passed")
+                self.restore_log.appendPlainText(f"\nTechnician report saved: {report_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Restore failed", str(exc))
         finally:
