@@ -17,7 +17,7 @@ python -m pip install pyinstaller
 pyinstaller --noconfirm --clean --windowed --name PixelIT-Profile-Migrator --collect-all cryptography --collect-all PySide6 --paths src src/pixelit_migrator/app.py
 ```
 
-Distribute the generated `dist/PixelIT-Profile-Migrator/` folder only after testing it on clean Windows 10/11 machines. Keep the executable unsigned until the signing and release process is defined; do not treat a successful build as validation.
+The GitHub Actions build checks that the executable exists and includes `SHA256SUMS.txt` for the packaged files. Distribute the generated `dist/PixelIT-Profile-Migrator/` folder only after testing it on clean Windows 10/11 machines and verifying the checksums. Keep the executable unsigned until the signing and release process is defined; do not treat a successful build as validation.
 
 ## Release gate — not yet satisfied
 
