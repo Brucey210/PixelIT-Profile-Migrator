@@ -16,7 +16,7 @@ from .crypto_package import create_package, inspect_package, restore_package
 from .inventory import USER_FOLDERS, build_manifest, discover_outlook, outlook_relative_paths
 from .manifest import resolve_under
 from .preflight import run_preflight
-from .reporting import write_job_report
+from .reporting import write_credential_checklist_report, write_job_report
 
 
 class _OperationWorker(QObject):
@@ -138,12 +138,45 @@ class MigratorWindow(QMainWindow):
             label = QLabel(item.instructions); label.setWordWrap(True)
             layout.addWidget(check); layout.addWidget(label); self.credential_checks.append(check)
         layout.addStretch(1); scroll.setWidget(content); outer.addWidget(scroll)
-        save = QPushButton("Show outstanding checklist items"); save.clicked.connect(self._show_credential_status); outer.addWidget(save)
+        checklist_actions = QHBoxLayout()
+        save = QPushButton("Show outstanding checklist items")
+        save.clicked.connect(self._show_credential_status)
+        export = QPushButton("Save checklist report")
+        export.clicked.connect(self._save_credential_report)
+        checklist_actions.addWidget(save); checklist_actions.addWidget(export)
+        outer.addLayout(checklist_actions)
         return page
 
     def _show_credential_status(self) -> None:
         outstanding = [item.title for item, check in zip(CREDENTIAL_CHECKLIST, self.credential_checks) if not check.isChecked()]
         QMessageBox.information(self, "Credential workflow", "Outstanding items:\n\n" + ("\n".join(outstanding) if outstanding else "All checklist items marked complete.") + "\n\nConfirm each item with the customer/technician; checkboxes are not proof of successful transfer.")
+
+    def _save_credential_report(self) -> None:
+        job_id = self.job_id.text().strip() or "UNASSIGNED"
+        items = [
+            {
+                "key": item.key,
+                "title": item.title,
+                "instructions": item.instructions,
+                "requires_customer_authorisation": item.requires_customer_authorisation,
+                "complete": check.isChecked(),
+            }
+            for item, check in zip(CREDENTIAL_CHECKLIST, self.credential_checks)
+        ]
+        suggested = f"PixelIT-Job-{job_id}-credential-checklist.json"
+        report_path, _ = QFileDialog.getSaveFileName(
+            self, "Save credential checklist report", suggested, "JSON report (*.json)"
+        )
+        if not report_path:
+            return
+        try:
+            write_credential_checklist_report(Path(report_path), job_id=job_id, items=items)
+            QMessageBox.information(
+                self, "Checklist report saved",
+                "Checklist status saved. It contains no credential values; verify every item with the customer/technician."
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not save checklist report", str(exc))
 
     def _choose_source(self) -> None:
         value = QFileDialog.getExistingDirectory(self, "Select source profile or root")
