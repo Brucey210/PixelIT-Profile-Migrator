@@ -196,8 +196,6 @@ class MigratorWindow(QMainWindow):
     def _worker_finished(self) -> None:
         QApplication.restoreOverrideCursor()
         self.centralWidget().setEnabled(True)
-        self.passphrase.clear()
-        self.restore_passphrase.clear()
         self._active_thread = None
         self._active_worker = None
 
@@ -242,10 +240,12 @@ class MigratorWindow(QMainWindow):
         self._start_worker(operation, self._create_succeeded, self._create_failed, self._create_progress)
 
     def _create_failed(self, message: str) -> None:
+        self.passphrase.clear()
         self.create_log.appendPlainText(f"\nERROR: {message}")
         QMessageBox.critical(self, "Package failed", message)
 
     def _create_succeeded(self, result: dict) -> None:
+        self.passphrase.clear()
         manifest = result["manifest"]
         output = result["output"]
         self.create_log.appendPlainText(
@@ -269,24 +269,49 @@ class MigratorWindow(QMainWindow):
             self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
 
     def _preview_restore(self) -> None:
-        package = Path(self.package_path.text().strip()); destination = Path(self.destination.text().strip())
+        package = Path(self.package_path.text().strip())
+        destination = Path(self.destination.text().strip())
         passphrase = self.restore_passphrase.text()
         if not package.is_file() or not destination.is_dir() or not passphrase:
-            QMessageBox.warning(self, "Missing information", "Choose a package, existing destination root and passphrase."); return
-        try:
+            QMessageBox.warning(
+                self, "Missing information",
+                "Choose a package, existing destination root and passphrase."
+            )
+            return
+        self.restore_manifest = None
+        self.restore_log.setPlainText("Authenticating package and checking destination conflicts…")
+
+        def operation(progress):
             manifest = inspect_package(package, passphrase)
-            lines = [f"Job ID: {manifest.job_id}", f"Source computer: {manifest.source_computer}", f"Files: {len(manifest.records)}", "", "Preview:"]
+            lines = [
+                f"Job ID: {manifest.job_id}",
+                f"Source computer: {manifest.source_computer}",
+                f"Files: {len(manifest.records)}",
+                "",
+                "Preview:",
+            ]
             conflicts = 0
             for record in manifest.records:
                 target = resolve_under(destination, record.path)
-                if target.exists(): conflicts += 1; state = "CONFLICT — will be skipped"
-                else: state = "CREATE"
+                if target.exists():
+                    conflicts += 1
+                    state = "CONFLICT — will be skipped"
+                else:
+                    state = "CREATE"
                 lines.append(f"{state}: {record.path}")
-            lines += ["", f"Conflicts: {conflicts}", "No destination files have been changed."]
-            self.restore_log.setPlainText("\n".join(lines)); self.restore_manifest = manifest
-        except Exception as exc:
-            self.restore_manifest = None; self.restore_log.setPlainText(f"Inspection failed: {exc}")
-            QMessageBox.critical(self, "Package inspection failed", str(exc))
+            lines.extend(["", f"Conflicts: {conflicts}", "No destination files have been changed."])
+            return {"manifest": manifest, "preview": "\n".join(lines)}
+
+        self._start_worker(operation, self._preview_succeeded, self._preview_failed)
+
+    def _preview_succeeded(self, result: dict) -> None:
+        self.restore_manifest = result["manifest"]
+        self.restore_log.setPlainText(result["preview"])
+
+    def _preview_failed(self, message: str) -> None:
+        self.restore_manifest = None
+        self.restore_log.setPlainText(f"Inspection failed: {message}")
+        QMessageBox.critical(self, "Package inspection failed", message)
 
     def _restore(self) -> None:
         if self.restore_manifest is None:
@@ -310,10 +335,12 @@ class MigratorWindow(QMainWindow):
                            self._restore_failed, self._restore_progress)
 
     def _restore_failed(self, message: str) -> None:
+        self.restore_passphrase.clear()
         self.restore_log.appendPlainText(f"\nRESTORE FAILED: {message}")
         QMessageBox.critical(self, "Restore failed", message)
 
     def _restore_succeeded(self, report: dict, manifest, destination: Path) -> None:
+        self.restore_passphrase.clear()
         self.restore_log.appendPlainText(
             "\n\nRESTORE REPORT\n"
             + f"Created: {len(report['created'])}\nSkipped: {len(report['skipped'])}\nErrors: {len(report['errors'])}"
