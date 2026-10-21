@@ -4,11 +4,25 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat as stat_module
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 MANIFEST_VERSION = 1
+
+
+def is_link_or_reparse(path: Path) -> bool:
+    """Detect symlinks and Windows reparse points without following the final path."""
+    try:
+        if path.is_symlink():
+            return True
+        if os.name == "nt":
+            attrs = getattr(path.lstat(), "st_file_attributes", 0)
+            return bool(attrs & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except OSError:
+        return True
+    return False
 
 
 def sha256_file(path: Path) -> str:
@@ -20,7 +34,6 @@ def sha256_file(path: Path) -> str:
 
 
 def validate_relative_path(value: str) -> str:
-    """Reject absolute paths, traversal, drive-qualified paths and empty segments."""
     if not isinstance(value, str) or not value or "\x00" in value:
         raise ValueError("Invalid empty or NUL-containing relative path")
     normal = value.replace("\\", "/")
@@ -46,10 +59,10 @@ class FileRecord:
     def from_file(cls, root: Path, file_path: Path) -> "FileRecord":
         relative = file_path.relative_to(root).as_posix()
         validate_relative_path(relative)
-        stat = file_path.stat()
-        if not file_path.is_file() or file_path.is_symlink():
+        if is_link_or_reparse(file_path) or not file_path.is_file():
             raise ValueError(f"Not a regular file: {relative}")
-        return cls(relative, stat.st_size, sha256_file(file_path))
+        stat_result = file_path.stat()
+        return cls(relative, stat_result.st_size, sha256_file(file_path))
 
     def validate(self) -> None:
         validate_relative_path(self.path)
@@ -68,43 +81,32 @@ class MigrationManifest:
     version: int = MANIFEST_VERSION
 
     def to_bytes(self) -> bytes:
-        payload = {
-            "version": self.version,
-            "job_id": self.job_id,
-            "created_utc": self.created_utc,
-            "source_computer": self.source_computer,
-            "records": [asdict(record) for record in self.records],
-        }
+        payload = {"version": self.version, "job_id": self.job_id, "created_utc": self.created_utc,
+                   "source_computer": self.source_computer, "records": [asdict(record) for record in self.records]}
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "MigrationManifest":
         try:
             obj: dict[str, Any] = json.loads(data.decode("utf-8"))
-            if obj.get("version") != MANIFEST_VERSION:
-                raise ValueError("Unsupported manifest version")
+            if not isinstance(obj, dict) or obj.get("version") != MANIFEST_VERSION:
+                raise ValueError("Unsupported or invalid manifest version")
             records = tuple(FileRecord(**row) for row in obj["records"])
             for record in records:
                 record.validate()
             paths = [r.path.casefold() for r in records]
             if len(paths) != len(set(paths)):
                 raise ValueError("Duplicate paths in manifest")
-            return cls(
-                job_id=str(obj["job_id"]),
-                created_utc=str(obj["created_utc"]),
-                source_computer=str(obj["source_computer"]),
-                records=records,
-                version=int(obj["version"]),
-            )
+            return cls(str(obj["job_id"]), str(obj["created_utc"]), str(obj["source_computer"]), records, int(obj["version"]))
         except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid migration manifest") from exc
 
 
 def resolve_under(root: Path, relative: str, *, reject_symlinks: bool = True) -> Path:
-    """Resolve a manifest path beneath root and reject existing symlink components.
+    """Resolve a manifest path beneath root and reject existing links/reparse points.
 
-    On Windows, production code must additionally detect all reparse-point types,
-    not just symbolic links. Do not treat this check alone as a race-free sandbox.
+    This check is not a race-free sandbox. Windows production builds still need native
+    handle-based reparse-point checks and handle-relative writes.
     """
     relative = validate_relative_path(relative)
     root = root.resolve(strict=True)
@@ -113,8 +115,8 @@ def resolve_under(root: Path, relative: str, *, reject_symlinks: bool = True) ->
     if reject_symlinks:
         for segment in relative.split("/"):
             current = current / segment
-            if current.is_symlink():
-                raise ValueError(f"Symlink component rejected: {relative}")
+            if is_link_or_reparse(current):
+                raise ValueError(f"Link/reparse-point component rejected: {relative}")
     resolved = candidate.resolve(strict=False)
     if os.path.commonpath([str(root), str(resolved)]) != str(root):
         raise ValueError("Path escapes selected root")
