@@ -23,7 +23,7 @@ def test_inventory_and_standard_uncompressed_zip(tmp_path):
     (extra / "jobs.csv").write_bytes(b"id,name\n1,Example\n")
     items, total = inventory([profile], [extra])
     assert len(items) == 2
-    assert total == len("backup data") + len("id,name\n1,Example\n".encode())
+    assert total == (profile / "Documents" / "notes.txt").stat().st_size + (extra / "jobs.csv").stat().st_size
     progress = []
     destination = tmp_path / "backup.zip"
     result = create_backup([profile], [extra], destination, "zip", lambda done, size, name: progress.append((done, size, name)))
