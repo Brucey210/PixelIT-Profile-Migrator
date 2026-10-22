@@ -24,8 +24,15 @@ QFrame#card { background: #ffffff; border: 1px solid #dce4ef; border-radius: 12p
 QLabel#title { font-size: 22pt; font-weight: 700; color: #13213a; }
 QLabel#subtitle { color: #63718a; font-size: 10.5pt; }
 QLabel#section { font-size: 12pt; font-weight: 650; color: #1d2d48; }
-QLineEdit, QComboBox, QListWidget { background: #ffffff; color: #182235; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px; }
-QListWidget { padding: 5px; }
+QLineEdit, QComboBox, QListWidget { background-color: #ffffff; color: #182235; border: 1px solid #cbd5e1; border-radius: 7px; }
+QLineEdit { padding: 7px 10px; min-height: 22px; }
+QComboBox { padding: 6px 34px 6px 10px; min-height: 26px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 28px; border-left: 1px solid #cbd5e1; background: #eef3f9; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QComboBox::down-arrow { width: 9px; height: 9px; }
+QComboBox QAbstractItemView { background-color: #ffffff; color: #182235; selection-background-color: #1769e0; selection-color: #ffffff; border: 1px solid #cbd5e1; outline: 0; padding: 4px; }
+QListWidget { padding: 4px; }
+QListWidget::item { min-height: 28px; padding: 5px 8px; }
+QLabel { background: transparent; }
 QPushButton { background: #e9eef6; color: #182235; border: 1px solid #d4deeb; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
 QPushButton:hover { background: #dfe8f5; }
 QPushButton#primary { background: #1769e0; color: white; border: 0; padding: 12px 18px; font-size: 11pt; }
@@ -39,7 +46,15 @@ QFrame#card { background: #1b2638; border: 1px solid #334155; border-radius: 12p
 QLabel#title { font-size: 22pt; font-weight: 700; color: #f8fafc; }
 QLabel#subtitle { color: #a7b4c8; font-size: 10.5pt; }
 QLabel#section { font-size: 12pt; font-weight: 650; color: #e5edf8; }
-QLineEdit, QComboBox, QListWidget { background: #111c2e; color: #e5eaf2; border: 1px solid #475569; border-radius: 7px; padding: 8px; selection-background-color: #1769e0; }
+QLineEdit, QComboBox, QListWidget { background-color: #111c2e; color: #e5eaf2; border: 1px solid #475569; border-radius: 7px; }
+QLineEdit { padding: 7px 10px; min-height: 22px; }
+QComboBox { padding: 6px 34px 6px 10px; min-height: 26px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 28px; border-left: 1px solid #475569; background: #29364a; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QComboBox::down-arrow { width: 9px; height: 9px; }
+QComboBox QAbstractItemView { background-color: #111c2e; color: #e5eaf2; selection-background-color: #1769e0; selection-color: #ffffff; border: 1px solid #475569; outline: 0; padding: 4px; }
+QListWidget { padding: 4px; }
+QListWidget::item { min-height: 28px; padding: 5px 8px; }
+QLabel { background: transparent; }
 QPushButton { background: #29364a; color: #e5eaf2; border: 1px solid #475569; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
 QPushButton:hover { background: #35465e; }
 QPushButton#primary { background: #1769e0; color: white; border: 0; padding: 12px 18px; font-size: 11pt; }
@@ -89,8 +104,8 @@ class MigratorWindow(QMainWindow):
         self._custom_profile_folders: dict[str, list[Path]] = {}
         self._cancel_event = threading.Event()
         self.setWindowTitle("Pixel IT Profile Migrator")
-        self.resize(1060, 820)
-        self.setMinimumSize(860, 700)
+        self.resize(1120, 900)
+        self.setMinimumSize(900, 760)
         from PySide6.QtCore import QSettings
         self.settings = QSettings("Pixel IT", "Profile Migrator")
         self.theme = self.settings.value("theme", "light")
@@ -144,8 +159,8 @@ class MigratorWindow(QMainWindow):
         drive_row.addWidget(refresh)
         source_card.addLayout(drive_row)
         self.profile_list = QListWidget()
-        self.profile_list.setMinimumHeight(135)
-        self.profile_list.setMaximumHeight(180)
+        self.profile_list.setMinimumHeight(150)
+        self.profile_list.setMaximumHeight(220)
         self.profile_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         source_card.addWidget(self.profile_list)
         profile_actions = QHBoxLayout()
@@ -168,7 +183,8 @@ class MigratorWindow(QMainWindow):
         extra_hint.setWordWrap(True)
         extra_card.addWidget(extra_hint)
         self.extra_list = QListWidget()
-        self.extra_list.setMaximumHeight(90)
+        self.extra_list.setMinimumHeight(58)
+        self.extra_list.setMaximumHeight(110)
         extra_card.addWidget(self.extra_list)
         extra_actions = QHBoxLayout()
         add_folder = QPushButton("＋ Add folder")
