@@ -41,7 +41,7 @@ jobs:
               "$($hash.Hash.ToLower())  $relative"
             }
           $lines | Set-Content -Encoding utf8 (Join-Path $root "SHA256SUMS.txt")
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PixelIT-Profile-Migrator-Windows-Alpha
           path: dist/PixelIT-Profile-Migrator/
