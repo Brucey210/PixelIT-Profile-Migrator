@@ -60,3 +60,33 @@ def test_format_bytes_uses_human_readable_units():
     assert format_bytes(0) == "0 B"
     assert format_bytes(1024 * 1024) == "1.0 MB"
     assert format_bytes(1024 ** 3) == "1.0 GB"
+
+
+def test_selecting_profile_subfolder_preserves_profile_path(tmp_path):
+    profile = tmp_path / "Users" / "Alice"
+    docs = profile / "Documents"
+    docs.mkdir(parents=True)
+    (docs / "keep.txt").write_text("keep", encoding="utf-8")
+    (profile / "Desktop").mkdir()
+    (profile / "Desktop" / "skip.txt").write_text("skip", encoding="utf-8")
+    destination = tmp_path / "selected.zip"
+    result = create_backup([docs], [], destination, "zip")
+    assert result["files"] == 1
+    with zipfile.ZipFile(destination) as archive:
+        assert archive.namelist() == ["Profiles/Alice/Documents/keep.txt"]
+
+
+def test_cancelled_zip_does_not_leave_partial_or_final_output(tmp_path):
+    import threading
+    from pixelit_migrator.backup_engine import BackupCancelled
+
+    profile = tmp_path / "Users" / "Alice"
+    profile.mkdir(parents=True)
+    (profile / "data.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+    cancel = threading.Event()
+    cancel.set()
+    destination = tmp_path / "cancelled.zip"
+    with pytest.raises(BackupCancelled):
+        create_backup([profile], [], destination, "zip", cancel_event=cancel)
+    assert not destination.exists()
+    assert not (tmp_path / "cancelled.zip.partial").exists()
