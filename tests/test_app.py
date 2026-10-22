@@ -5,9 +5,11 @@ from PySide6.QtWidgets import QApplication, QProgressBar, QPushButton
 
 from pixelit_migrator.app import MigratorWindow
 
+# Keep QApplication alive for the entire test module to avoid Qt teardown races.
+_APP = QApplication.instance() or QApplication([])
+
 
 def test_main_window_shows_backup_workflow_without_package_preview():
-    app = QApplication.instance() or QApplication([])
     window = MigratorWindow()
     assert isinstance(window.start_button, QPushButton)
     assert window.start_button.text() == "Start backup"
@@ -18,4 +20,6 @@ def test_main_window_shows_backup_workflow_without_package_preview():
     assert not hasattr(window, "passphrase")
     assert not hasattr(window, "restore_manifest")
     window.close()
-    app.processEvents()
+    window.deleteLater()
+    _APP.sendPostedEvents()
+    _APP.processEvents()
