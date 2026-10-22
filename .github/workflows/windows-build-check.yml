@@ -36,3 +36,14 @@ jobs:
             throw "PyInstaller did not produce the expected executable: $exe"
           }
           Get-Item $exe | Select-Object FullName, Length
+      - name: Package portable build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/PixelIT-Profile-Migrator" -DestinationPath "dist/PixelIT-Profile-Migrator-Windows-x64.zip" -CompressionLevel Optimal
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixelIT-Profile-Migrator-Windows-x64
+          path: dist/PixelIT-Profile-Migrator-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
