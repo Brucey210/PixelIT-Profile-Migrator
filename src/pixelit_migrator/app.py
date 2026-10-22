@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import time
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QDir
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPushButton, QProgressBar, QVBoxLayout, QWidget, QAbstractItemView,
+    QDialog, QDialogButtonBox,
 )
 
 from .backup_engine import create_backup, discover_profiles, format_bytes
@@ -53,12 +55,13 @@ class _BackupWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, profiles: list[Path], extras: list[Path], destination: Path, output_format: str):
+    def __init__(self, profiles: list[Path], extras: list[Path], destination: Path, output_format: str, cancel_event: threading.Event):
         super().__init__()
         self.profiles = profiles
         self.extras = extras
         self.destination = destination
         self.output_format = output_format
+        self.cancel_event = cancel_event
 
     @Slot()
     def run(self):
@@ -66,7 +69,7 @@ class _BackupWorker(QObject):
             self.progress.emit(0, 0, "Scanning selected data and estimating backup size…")
             result = create_backup(
                 self.profiles, self.extras, self.destination, self.output_format,
-                progress=self.progress.emit,
+                progress=self.progress.emit, cancel_event=self.cancel_event,
             )
             self.succeeded.emit(result)
         except Exception as exc:
@@ -83,6 +86,8 @@ class MigratorWindow(QMainWindow):
         self._started_at = 0.0
         self._last_progress = 0
         self._profile_paths: list[Path] = []
+        self._custom_profile_folders: dict[str, list[Path]] = {}
+        self._cancel_event = threading.Event()
         self.setWindowTitle("Pixel IT Profile Migrator")
         self.resize(1060, 820)
         self.setMinimumSize(860, 700)
@@ -152,6 +157,10 @@ class MigratorWindow(QMainWindow):
         profile_actions.addWidget(select_none)
         profile_actions.addStretch(1)
         source_card.addLayout(profile_actions)
+        self.choose_folders_button = QPushButton("Choose folders inside selected profile…")
+        self.choose_folders_button.setToolTip("Select specific top-level folders instead of backing up the whole profile.")
+        self.choose_folders_button.clicked.connect(self._choose_profile_folders)
+        source_card.addWidget(self.choose_folders_button)
 
         extra_card = self._card(page, "2  ·  Add other files or folders (optional)")
         extra_hint = QLabel("Include files outside the selected profiles, such as business data folders or PST files.")
@@ -222,6 +231,11 @@ class MigratorWindow(QMainWindow):
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self._start_backup)
         footer.addWidget(self.start_button)
+        self.cancel_button = QPushButton("Cancel backup")
+        self.cancel_button.setToolTip("Stop the backup and discard incomplete output.")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self._cancel_backup)
+        footer.addWidget(self.cancel_button)
         page.addLayout(footer)
         self.setCentralWidget(root)
         self.statusBar().showMessage("Pixel IT Profile Migrator · Standard, uncompressed backups")
@@ -286,8 +300,64 @@ class MigratorWindow(QMainWindow):
         for index in range(self.profile_list.count()):
             item = self.profile_list.item(index)
             if item.flags() & Qt.ItemFlag.ItemIsUserCheckable and item.checkState() == Qt.CheckState.Checked:
-                selected.append(Path(item.data(Qt.ItemDataRole.UserRole)))
+                profile = Path(item.data(Qt.ItemDataRole.UserRole))
+                selected.extend(self._custom_profile_folders.get(str(profile), [profile]))
         return selected
+
+    def _selected_profile_roots(self) -> list[Path]:
+        roots = []
+        for index in range(self.profile_list.count()):
+            item = self.profile_list.item(index)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable and item.checkState() == Qt.CheckState.Checked:
+                roots.append(Path(item.data(Qt.ItemDataRole.UserRole)))
+        return roots
+
+    def _choose_profile_folders(self):
+        roots = self._selected_profile_roots()
+        if len(roots) != 1:
+            QMessageBox.information(self, "Select one profile", "Tick exactly one profile, then choose its folders.")
+            return
+        profile = roots[0]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose folders — " + profile.name)
+        dialog.resize(520, 560)
+        layout = QVBoxLayout(dialog)
+        intro = QLabel("Tick the folders to include. Leave everything unticked to back up the whole profile.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        folders = QListWidget()
+        folders.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(folders, 1)
+        try:
+            children = sorted((p for p in profile.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold())
+        except OSError as exc:
+            QMessageBox.warning(self, "Cannot list folders", "Windows denied access to the profile folder list. " + str(exc))
+            return
+        custom = self._custom_profile_folders.get(str(profile), [])
+        for child in children:
+            item = QListWidgetItem("Folder  ·  " + child.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(child))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if child in custom else Qt.CheckState.Unchecked)
+            folders.addItem(item)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            checked = [Path(folders.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(folders.count()) if folders.item(i).checkState() == Qt.CheckState.Checked]
+            if checked:
+                self._custom_profile_folders[str(profile)] = checked
+            else:
+                self._custom_profile_folders.pop(str(profile), None)
+            self.status_label.setText("Folder scope updated for " + profile.name if checked else "Whole profile selected")
+
+    def _cancel_backup(self):
+        if self._active_thread is not None:
+            self._cancel_event.set()
+            self.cancel_button.setEnabled(False)
+            self.status_label.setText("Cancelling backup…")
+            self.progress_label.setText("Cancellation requested; finishing current file chunk…")
 
     def _add_folder(self):
         value = QFileDialog.getExistingDirectory(self, "Select an additional folder")
@@ -348,6 +418,7 @@ class MigratorWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid destination", "For ZIP backups, choose a filename ending in .zip.")
             return
         self._started_at = time.monotonic()
+        self._cancel_event = threading.Event()
         self._last_progress = 0
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -355,9 +426,10 @@ class MigratorWindow(QMainWindow):
         self.eta_label.setText("Estimated time remaining: calculating…")
         self.current_file.clear()
         self.start_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
         self.status_label.setText("Backup running")
         self._active_thread = QThread(self)
-        self._active_worker = _BackupWorker(profiles, extras, destination, self.format.currentData())
+        self._active_worker = _BackupWorker(profiles, extras, destination, self.format.currentData(), self._cancel_event)
         self._active_worker.moveToThread(self._active_thread)
         self._active_thread.started.connect(self._active_worker.run)
         self._active_worker.progress.connect(self._update_progress)
@@ -417,6 +489,12 @@ class MigratorWindow(QMainWindow):
 
     @Slot(str)
     def _backup_failed(self, message: str):
+        if "cancelled by the operator" in message.casefold():
+            self.status_label.setText("Backup cancelled")
+            self.progress_label.setText("Backup cancelled; incomplete output was discarded.")
+            self.eta_label.setText("Estimated time remaining: —")
+            self.current_file.setText("No completed backup was created.")
+            return
         self.status_label.setText("Backup failed")
         self.progress_label.setText("Backup stopped before completion.")
         self.eta_label.setText("Estimated time remaining: —")
@@ -426,6 +504,7 @@ class MigratorWindow(QMainWindow):
     @Slot()
     def _worker_finished(self):
         self.start_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         self._active_thread = None
         self._active_worker = None
 
