@@ -20,7 +20,7 @@ def test_inventory_and_standard_uncompressed_zip(tmp_path):
     (profile / "Documents" / "notes.txt").write_text("backup data", encoding="utf-8")
     extra = tmp_path / "Company"
     extra.mkdir()
-    (extra / "jobs.csv").write_text("id,name\n1,Example\n", encoding="utf-8")
+    (extra / "jobs.csv").write_bytes(b"id,name\n1,Example\n")
     items, total = inventory([profile], [extra])
     assert len(items) == 2
     assert total == len("backup data") + len("id,name\n1,Example\n".encode())
