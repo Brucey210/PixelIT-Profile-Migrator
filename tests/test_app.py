@@ -19,6 +19,12 @@ def test_main_window_shows_backup_workflow_without_package_preview():
     assert window.format.itemData(1) == "folder"
     assert not hasattr(window, "passphrase")
     assert not hasattr(window, "restore_manifest")
+    assert window.theme in {"light", "dark"}
+    original_theme = window.theme
+    window.theme_button.click()
+    assert window.theme != original_theme
+    window.theme_button.click()
+    assert window.theme == original_theme
     window.close()
     window.deleteLater()
     _APP.sendPostedEvents()
