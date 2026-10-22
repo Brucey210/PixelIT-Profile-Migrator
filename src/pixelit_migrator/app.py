@@ -16,20 +16,34 @@ from PySide6.QtWidgets import (
 from .backup_engine import create_backup, discover_profiles, format_bytes
 
 
-STYLE = """
+LIGHT_STYLE = """
 QMainWindow, QWidget { background: #f4f7fb; color: #182235; font-family: 'Segoe UI'; font-size: 10pt; }
 QFrame#card { background: #ffffff; border: 1px solid #dce4ef; border-radius: 12px; }
 QLabel#title { font-size: 22pt; font-weight: 700; color: #13213a; }
 QLabel#subtitle { color: #63718a; font-size: 10.5pt; }
 QLabel#section { font-size: 12pt; font-weight: 650; color: #1d2d48; }
-QLineEdit, QComboBox, QListWidget { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px; }
+QLineEdit, QComboBox, QListWidget { background: #ffffff; color: #182235; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px; }
 QListWidget { padding: 5px; }
-QPushButton { background: #e9eef6; border: 1px solid #d4deeb; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
+QPushButton { background: #e9eef6; color: #182235; border: 1px solid #d4deeb; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
 QPushButton:hover { background: #dfe8f5; }
 QPushButton#primary { background: #1769e0; color: white; border: 0; padding: 12px 18px; font-size: 11pt; }
 QPushButton#primary:hover { background: #1058c3; }
-QProgressBar { border: 0; background: #e1e8f2; border-radius: 6px; height: 14px; text-align: center; }
+QProgressBar { border: 0; background: #e1e8f2; color: #182235; border-radius: 6px; height: 14px; text-align: center; }
 QProgressBar::chunk { background: #1769e0; border-radius: 6px; }
+"""
+DARK_STYLE = """
+QMainWindow, QWidget { background: #111827; color: #e5eaf2; font-family: 'Segoe UI'; font-size: 10pt; }
+QFrame#card { background: #1b2638; border: 1px solid #334155; border-radius: 12px; }
+QLabel#title { font-size: 22pt; font-weight: 700; color: #f8fafc; }
+QLabel#subtitle { color: #a7b4c8; font-size: 10.5pt; }
+QLabel#section { font-size: 12pt; font-weight: 650; color: #e5edf8; }
+QLineEdit, QComboBox, QListWidget { background: #111c2e; color: #e5eaf2; border: 1px solid #475569; border-radius: 7px; padding: 8px; selection-background-color: #1769e0; }
+QPushButton { background: #29364a; color: #e5eaf2; border: 1px solid #475569; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
+QPushButton:hover { background: #35465e; }
+QPushButton#primary { background: #1769e0; color: white; border: 0; padding: 12px 18px; font-size: 11pt; }
+QPushButton#primary:hover { background: #1058c3; }
+QProgressBar { border: 0; background: #334155; color: #f8fafc; border-radius: 6px; height: 14px; text-align: center; }
+QProgressBar::chunk { background: #38bdf8; border-radius: 6px; }
 """
 
 
@@ -72,7 +86,10 @@ class MigratorWindow(QMainWindow):
         self.setWindowTitle("Pixel IT Profile Migrator")
         self.resize(1060, 820)
         self.setMinimumSize(860, 700)
-        self.setStyleSheet(STYLE)
+        from PySide6.QtCore import QSettings
+        self.settings = QSettings("Pixel IT", "Profile Migrator")
+        self.theme = self.settings.value("theme", "light")
+        self.setStyleSheet(DARK_STYLE if self.theme == "dark" else LIGHT_STYLE)
         self._build_ui()
         self._load_drives()
 
@@ -100,9 +117,16 @@ class MigratorWindow(QMainWindow):
         subtitle = QLabel("Select Windows profiles, add any extra folders, then create a standard folder or ZIP backup.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
-        heading.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.addWidget(title, 1)
+        self.theme_button = QPushButton()
+        self.theme_button.setToolTip("Switch between light and dark appearance")
+        self.theme_button.clicked.connect(self._toggle_theme)
+        title_row.addWidget(self.theme_button)
+        heading.addLayout(title_row)
         heading.addWidget(subtitle)
         page.addLayout(heading)
+        self._update_theme_button()
 
         source_card = self._card(page, "1  ·  Select user profiles")
         drive_row = QHBoxLayout()
@@ -201,6 +225,15 @@ class MigratorWindow(QMainWindow):
         page.addLayout(footer)
         self.setCentralWidget(root)
         self.statusBar().showMessage("Pixel IT Profile Migrator · Standard, uncompressed backups")
+
+    def _update_theme_button(self):
+        self.theme_button.setText("☾  Dark mode" if self.theme == "light" else "☀  Light mode")
+
+    def _toggle_theme(self):
+        self.theme = "dark" if self.theme == "light" else "light"
+        self.settings.setValue("theme", self.theme)
+        self.setStyleSheet(DARK_STYLE if self.theme == "dark" else LIGHT_STYLE)
+        self._update_theme_button()
 
     def _load_drives(self):
         current = ""
