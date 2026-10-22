@@ -1,38 +1,60 @@
-"""Minimal PySide6 technician UI for the alpha package workflow."""
+"""Pixel IT Profile Migrator — simple profile backup interface."""
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QDir
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit,
-    QProgressBar, QTabWidget, QVBoxLayout, QWidget, QScrollArea,
+    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QPushButton, QProgressBar, QVBoxLayout, QWidget, QAbstractItemView,
 )
 
-from .credential_workflow import CREDENTIAL_CHECKLIST
-from .crypto_package import create_package, inspect_package, restore_package
-from .inventory import USER_FOLDERS, build_manifest, discover_outlook, outlook_relative_paths
-from .manifest import resolve_under
-from .preflight import run_preflight
-from .reporting import write_credential_checklist_report, write_job_report
+from .backup_engine import create_backup, discover_profiles, format_bytes
 
 
-class _OperationWorker(QObject):
+STYLE = """
+QMainWindow, QWidget { background: #f4f7fb; color: #182235; font-family: 'Segoe UI'; font-size: 10pt; }
+QFrame#card { background: #ffffff; border: 1px solid #dce4ef; border-radius: 12px; }
+QLabel#title { font-size: 22pt; font-weight: 700; color: #13213a; }
+QLabel#subtitle { color: #63718a; font-size: 10.5pt; }
+QLabel#section { font-size: 12pt; font-weight: 650; color: #1d2d48; }
+QLineEdit, QComboBox, QListWidget { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px; }
+QListWidget { padding: 5px; }
+QPushButton { background: #e9eef6; border: 1px solid #d4deeb; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
+QPushButton:hover { background: #dfe8f5; }
+QPushButton#primary { background: #1769e0; color: white; border: 0; padding: 12px 18px; font-size: 11pt; }
+QPushButton#primary:hover { background: #1058c3; }
+QProgressBar { border: 0; background: #e1e8f2; border-radius: 6px; height: 14px; text-align: center; }
+QProgressBar::chunk { background: #1769e0; border-radius: 6px; }
+"""
+
+
+class _BackupWorker(QObject):
     progress = Signal(int, int, str)
     succeeded = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, operation) -> None:
+    def __init__(self, profiles: list[Path], extras: list[Path], destination: Path, output_format: str):
         super().__init__()
-        self.operation = operation
+        self.profiles = profiles
+        self.extras = extras
+        self.destination = destination
+        self.output_format = output_format
 
     @Slot()
-    def run(self) -> None:
+    def run(self):
         try:
-            self.succeeded.emit(self.operation(self.progress.emit))
+            self.progress.emit(0, 0, "Scanning selected data and estimating backup size…")
+            result = create_backup(
+                self.profiles, self.extras, self.destination, self.output_format,
+                progress=self.progress.emit,
+            )
+            self.succeeded.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
@@ -40,456 +62,356 @@ class _OperationWorker(QObject):
 
 
 class MigratorWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
         self._active_thread = None
         self._active_worker = None
-        self._pending_restore_manifest = None
-        self._pending_restore_destination = None
-        self.setWindowTitle("Pixel IT Profile Migrator — Alpha")
-        self.resize(980, 720)
-        tabs = QTabWidget()
-        tabs.addTab(self._build_create_tab(), "Create migration package")
-        tabs.addTab(self._build_restore_tab(), "Restore package")
-        tabs.addTab(self._build_credential_tab(), "Outlook & credentials")
-        self.setCentralWidget(tabs)
-        self.statusBar().showMessage("Alpha build — verify an independent backup before use")
+        self._started_at = 0.0
+        self._last_progress = 0
+        self._profile_paths: list[Path] = []
+        self.setWindowTitle("Pixel IT Profile Migrator")
+        self.resize(1060, 820)
+        self.setMinimumSize(860, 700)
+        self.setStyleSheet(STYLE)
+        self._build_ui()
+        self._load_drives()
 
+    def _card(self, layout, title: str):
+        frame = QFrame()
+        frame.setObjectName("card")
+        inner = QVBoxLayout(frame)
+        inner.setContentsMargins(18, 16, 18, 18)
+        inner.setSpacing(10)
+        label = QLabel(title)
+        label.setObjectName("section")
+        inner.addWidget(label)
+        layout.addWidget(frame)
+        return inner
 
-    def closeEvent(self, event) -> None:
-        if self._active_thread is not None:
-            QMessageBox.warning(
-                self, "Migration in progress",
-                "Wait for the current operation to finish before closing Pixel IT Profile Migrator."
-            )
-            event.ignore()
+    def _build_ui(self):
+        root = QWidget()
+        page = QVBoxLayout(root)
+        page.setContentsMargins(26, 22, 26, 22)
+        page.setSpacing(14)
+
+        heading = QVBoxLayout()
+        title = QLabel("Profile Backup")
+        title.setObjectName("title")
+        subtitle = QLabel("Select Windows profiles, add any extra folders, then create a standard folder or ZIP backup.")
+        subtitle.setObjectName("subtitle")
+        subtitle.setWordWrap(True)
+        heading.addWidget(title)
+        heading.addWidget(subtitle)
+        page.addLayout(heading)
+
+        source_card = self._card(page, "1  ·  Select user profiles")
+        drive_row = QHBoxLayout()
+        drive_row.addWidget(QLabel("Search drive"))
+        self.drive = QComboBox()
+        self.drive.currentTextChanged.connect(self._refresh_profiles)
+        drive_row.addWidget(self.drive, 1)
+        refresh = QPushButton("Rescan")
+        refresh.clicked.connect(self._refresh_profiles)
+        drive_row.addWidget(refresh)
+        source_card.addLayout(drive_row)
+        self.profile_list = QListWidget()
+        self.profile_list.setMinimumHeight(135)
+        self.profile_list.setMaximumHeight(180)
+        self.profile_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        source_card.addWidget(self.profile_list)
+        profile_actions = QHBoxLayout()
+        select_all = QPushButton("Select all profiles")
+        select_all.clicked.connect(lambda: self._check_profiles(True))
+        select_none = QPushButton("Clear selection")
+        select_none.clicked.connect(lambda: self._check_profiles(False))
+        profile_actions.addWidget(select_all)
+        profile_actions.addWidget(select_none)
+        profile_actions.addStretch(1)
+        source_card.addLayout(profile_actions)
+
+        extra_card = self._card(page, "2  ·  Add other files or folders (optional)")
+        extra_hint = QLabel("Include files outside the selected profiles, such as business data folders or PST files.")
+        extra_hint.setObjectName("subtitle")
+        extra_hint.setWordWrap(True)
+        extra_card.addWidget(extra_hint)
+        self.extra_list = QListWidget()
+        self.extra_list.setMaximumHeight(90)
+        extra_card.addWidget(self.extra_list)
+        extra_actions = QHBoxLayout()
+        add_folder = QPushButton("＋ Add folder")
+        add_folder.clicked.connect(self._add_folder)
+        add_file = QPushButton("＋ Add files")
+        add_file.clicked.connect(self._add_files)
+        remove_extra = QPushButton("Remove selected")
+        remove_extra.clicked.connect(self._remove_extra)
+        extra_actions.addWidget(add_folder)
+        extra_actions.addWidget(add_file)
+        extra_actions.addWidget(remove_extra)
+        extra_actions.addStretch(1)
+        extra_card.addLayout(extra_actions)
+
+        destination_card = self._card(page, "3  ·  Choose backup destination")
+        format_row = QHBoxLayout()
+        format_row.addWidget(QLabel("Backup type"))
+        self.format = QComboBox()
+        self.format.addItem("Uncompressed ZIP (single file)", "zip")
+        self.format.addItem("Regular folder tree", "folder")
+        self.format.currentIndexChanged.connect(self._update_destination_hint)
+        format_row.addWidget(self.format, 1)
+        destination_card.addLayout(format_row)
+        dest_row = QHBoxLayout()
+        self.destination = QLineEdit()
+        self.destination.setPlaceholderText("Choose where the backup will be saved")
+        dest_row.addWidget(self.destination, 1)
+        self.browse_destination = QPushButton("Browse…")
+        self.browse_destination.clicked.connect(self._choose_destination)
+        dest_row.addWidget(self.browse_destination)
+        destination_card.addLayout(dest_row)
+        self.destination_hint = QLabel("ZIP files are stored without compression and can be opened by standard archive utilities.")
+        self.destination_hint.setObjectName("subtitle")
+        self.destination_hint.setWordWrap(True)
+        destination_card.addWidget(self.destination_hint)
+
+        progress_card = self._card(page, "Backup progress")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        progress_card.addWidget(self.progress_bar)
+        stats = QHBoxLayout()
+        self.progress_label = QLabel("Ready when you are.")
+        self.progress_label.setWordWrap(True)
+        self.eta_label = QLabel("Estimated time remaining: —")
+        self.eta_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        stats.addWidget(self.progress_label, 1)
+        stats.addWidget(self.eta_label)
+        progress_card.addLayout(stats)
+        self.current_file = QLabel("")
+        self.current_file.setObjectName("subtitle")
+        self.current_file.setWordWrap(True)
+        progress_card.addWidget(self.current_file)
+
+        footer = QHBoxLayout()
+        self.status_label = QLabel("No backup running")
+        self.status_label.setObjectName("subtitle")
+        footer.addWidget(self.status_label, 1)
+        self.start_button = QPushButton("Start backup")
+        self.start_button.setObjectName("primary")
+        self.start_button.clicked.connect(self._start_backup)
+        footer.addWidget(self.start_button)
+        page.addLayout(footer)
+        self.setCentralWidget(root)
+        self.statusBar().showMessage("Pixel IT Profile Migrator · Standard, uncompressed backups")
+
+    def _load_drives(self):
+        current = ""
+        for drive in QDir.drives():
+            path = drive.absoluteFilePath()
+            if path:
+                self.drive.addItem(path, path)
+                if path.upper().startswith("C:"):
+                    current = path
+        if current:
+            self.drive.setCurrentText(current)
+        elif self.drive.count():
+            self.drive.setCurrentIndex(0)
+        self._refresh_profiles()
+
+    def _refresh_profiles(self, *_):
+        value = self.drive.currentData() or self.drive.currentText()
+        if not value:
             return
-        event.accept()
-
-    def _build_create_tab(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); form = QFormLayout()
-        self.source = QLineEdit()
-        browse_source = QPushButton("Browse…"); browse_source.clicked.connect(self._choose_source)
-        source_row = QHBoxLayout(); source_row.addWidget(self.source); source_row.addWidget(browse_source)
-        source_widget = QWidget(); source_widget.setLayout(source_row)
-        form.addRow("Source profile / root", source_widget)
-        self.output = QLineEdit()
-        browse_output = QPushButton("Save package…"); browse_output.clicked.connect(self._choose_output)
-        output_row = QHBoxLayout(); output_row.addWidget(self.output); output_row.addWidget(browse_output)
-        output_widget = QWidget(); output_widget.setLayout(output_row)
-        form.addRow("Package file", output_widget)
-        self.job_id = QLineEdit(); self.job_id.setPlaceholderText("Optional job ID; generated if blank")
-        form.addRow("Job ID", self.job_id)
-        layout.addLayout(form)
-        layout.addWidget(QLabel("Select folders relative to the chosen source root:"))
-        self.folder_checks = []
-        folders = QWidget(); folder_layout = QHBoxLayout(folders)
-        for name in USER_FOLDERS:
-            check = QCheckBox(name); check.setChecked(name in ("Desktop", "Documents", "Downloads", "Pictures", "Favorites"))
-            self.folder_checks.append(check); folder_layout.addWidget(check)
-        folder_layout.addStretch(1); layout.addWidget(folders)
-        self.outlook_label = QLabel("Outlook discovery: choose a source profile to scan.")
-        self.outlook_label.setWordWrap(True); layout.addWidget(self.outlook_label)
-        self.include_outlook = QCheckBox("Include discovered Outlook PSTs, signatures and templates")
-        self.include_outlook.setChecked(True)
-        layout.addWidget(self.include_outlook)
-        scan_row = QHBoxLayout()
-        scan = QPushButton("Scan Outlook data"); scan.clicked.connect(self._scan_outlook)
-        preflight = QPushButton("Run preflight scan"); preflight.clicked.connect(self._run_preflight)
-        scan_row.addWidget(scan); scan_row.addWidget(preflight); scan_row.addStretch(1); layout.addLayout(scan_row)
-        self.passphrase = QLineEdit(); self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
-        self.passphrase.setPlaceholderText("Use a unique passphrase (12+ characters)")
-        form.addRow("Package passphrase", self.passphrase)
-        self.progress = QProgressBar(); self.progress.setRange(0, 100); layout.addWidget(self.progress)
-        self.create_log = QPlainTextEdit(); self.create_log.setReadOnly(True); layout.addWidget(self.create_log, 1)
-        create = QPushButton("Create encrypted package"); create.clicked.connect(self._create_package); layout.addWidget(create)
-        self.create_button = create
-        note = QLabel("ALPHA: selected folders plus discovered Outlook PSTs/signatures/templates when enabled. Windows metadata and cloud placeholders require additional handling. Test restores before customer use.")
-        note.setWordWrap(True); layout.addWidget(note)
-        return page
-
-    def _build_restore_tab(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); form = QFormLayout()
-        self.package_path = QLineEdit(); choose_package = QPushButton("Browse…"); choose_package.clicked.connect(self._choose_package)
-        row = QHBoxLayout(); row.addWidget(self.package_path); row.addWidget(choose_package); widget = QWidget(); widget.setLayout(row)
-        form.addRow("Encrypted package", widget)
-        self.destination = QLineEdit(); choose_destination = QPushButton("Browse…"); choose_destination.clicked.connect(self._choose_destination)
-        row2 = QHBoxLayout(); row2.addWidget(self.destination); row2.addWidget(choose_destination); widget2 = QWidget(); widget2.setLayout(row2)
-        form.addRow("Destination root", widget2)
-        self.restore_passphrase = QLineEdit(); self.restore_passphrase.setEchoMode(QLineEdit.Password)
-        form.addRow("Package passphrase", self.restore_passphrase)
-        layout.addLayout(form)
-        preview = QPushButton("Inspect package and preview conflicts"); preview.clicked.connect(self._preview_restore); layout.addWidget(preview)
-        self.restore_log = QPlainTextEdit(); self.restore_log.setReadOnly(True); layout.addWidget(self.restore_log, 1)
-        restore = QPushButton("Restore non-conflicting files"); restore.clicked.connect(self._restore); layout.addWidget(restore)
-        self.restore_button = restore
-        self.restore_manifest = None
-        return page
-
-    def _build_credential_tab(self) -> QWidget:
-        page = QWidget(); outer = QVBoxLayout(page)
-        intro = QLabel("Use supported vendor workflows. This tool deliberately does not extract Windows passwords, browser secret stores or authentication tokens.")
-        intro.setWordWrap(True); outer.addWidget(intro)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        content = QWidget(); layout = QVBoxLayout(content); self.credential_checks = []
-        for item in CREDENTIAL_CHECKLIST:
-            check = QCheckBox(item.title)
-            check.setToolTip(item.instructions)
-            label = QLabel(item.instructions); label.setWordWrap(True)
-            layout.addWidget(check); layout.addWidget(label); self.credential_checks.append(check)
-        layout.addStretch(1); scroll.setWidget(content); outer.addWidget(scroll)
-        checklist_actions = QHBoxLayout()
-        save = QPushButton("Show outstanding checklist items")
-        save.clicked.connect(self._show_credential_status)
-        export = QPushButton("Save checklist report")
-        export.clicked.connect(self._save_credential_report)
-        checklist_actions.addWidget(save); checklist_actions.addWidget(export)
-        outer.addLayout(checklist_actions)
-        return page
-
-    def _show_credential_status(self) -> None:
-        outstanding = [item.title for item, check in zip(CREDENTIAL_CHECKLIST, self.credential_checks) if not check.isChecked()]
-        QMessageBox.information(self, "Credential workflow", "Outstanding items:\n\n" + ("\n".join(outstanding) if outstanding else "All checklist items marked complete.") + "\n\nConfirm each item with the customer/technician; checkboxes are not proof of successful transfer.")
-
-    def _save_credential_report(self) -> None:
-        job_id = self.job_id.text().strip() or "UNASSIGNED"
-        items = [
-            {
-                "key": item.key,
-                "title": item.title,
-                "instructions": item.instructions,
-                "requires_customer_authorisation": item.requires_customer_authorisation,
-                "complete": check.isChecked(),
-            }
-            for item, check in zip(CREDENTIAL_CHECKLIST, self.credential_checks)
-        ]
-        suggested = f"PixelIT-Job-{job_id}-credential-checklist.json"
-        report_path, _ = QFileDialog.getSaveFileName(
-            self, "Save credential checklist report", suggested, "JSON report (*.json)"
-        )
-        if not report_path:
-            return
+        root = Path(value)
+        self.profile_list.clear()
         try:
-            write_credential_checklist_report(Path(report_path), job_id=job_id, items=items)
-            QMessageBox.information(
-                self, "Checklist report saved",
-                "Checklist status saved. It contains no credential values; verify every item with the customer/technician."
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Could not save checklist report", str(exc))
-
-    def _choose_source(self) -> None:
-        value = QFileDialog.getExistingDirectory(self, "Select source profile or root")
-        if value: self.source.setText(value)
-
-    def _choose_output(self) -> None:
-        value, _ = QFileDialog.getSaveFileName(self, "Save encrypted migration package", "PixelIT-Migration.pitpkg", "Pixel IT package (*.pitpkg)")
-        if value: self.output.setText(value)
-
-    def _choose_package(self) -> None:
-        value, _ = QFileDialog.getOpenFileName(self, "Select migration package", "", "Pixel IT package (*.pitpkg);;All files (*)")
-        if value: self.package_path.setText(value)
-
-    def _choose_destination(self) -> None:
-        value = QFileDialog.getExistingDirectory(self, "Select destination profile root")
-        if value: self.destination.setText(value)
-
-    def _scan_outlook(self) -> None:
-        source = Path(self.source.text().strip())
-        if not source.is_dir():
-            QMessageBox.warning(self, "Source required", "Select a valid source profile/root first."); return
-        found = discover_outlook(source)
-        lines = [f"PST files ({len(found['pst'])}):", *found["pst"],
-                 f"\nSignatures ({len(found['signatures'])} files):", *found["signatures"],
-                 f"\nTemplates ({len(found['templates'])} files):", *found["templates"],
-                 "\nNotes:", *found["notes"]]
-        self.outlook_label.setText("\n".join(lines))
-
-    def _run_preflight(self) -> None:
-        source = Path(self.source.text().strip())
-        if not source.is_dir():
-            QMessageBox.warning(self, "Source required", "Select a valid source profile/root first.")
+            profiles = discover_profiles(root)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Could not scan {root}: {exc}")
+            profiles = []
+        self._profile_paths = profiles
+        if not profiles:
+            item = QListWidgetItem("No profiles found in this drive's Users folder.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.profile_list.addItem(item)
             return
-        try:
-            target = Path(self.output.text().strip()) if self.output.text().strip() else None
-            selected_paths = [check.text() for check in self.folder_checks if check.isChecked()]
-            if self.include_outlook.isChecked():
-                selected_paths.extend(outlook_relative_paths(source))
-            if not selected_paths:
-                QMessageBox.warning(self, "Selection required", "Select folders or enable Outlook data inclusion.")
+        for path in profiles:
+            item = QListWidgetItem(f"{path.name}    ·    {path}")
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.profile_list.addItem(item)
+        self.statusBar().showMessage(f"Found {len(profiles)} profile(s) in {root}")
+
+    def _check_profiles(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for index in range(self.profile_list.count()):
+            item = self.profile_list.item(index)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(state)
+
+    def _selected_profiles(self) -> list[Path]:
+        selected = []
+        for index in range(self.profile_list.count()):
+            item = self.profile_list.item(index)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable and item.checkState() == Qt.CheckState.Checked:
+                selected.append(Path(item.data(Qt.ItemDataRole.UserRole)))
+        return selected
+
+    def _add_folder(self):
+        value = QFileDialog.getExistingDirectory(self, "Select an additional folder")
+        if value:
+            self._add_extra_path(Path(value))
+
+    def _add_files(self):
+        values, _ = QFileDialog.getOpenFileNames(self, "Select additional files")
+        for value in values:
+            self._add_extra_path(Path(value))
+
+    def _add_extra_path(self, path: Path):
+        resolved = path.resolve()
+        for index in range(self.extra_list.count()):
+            if Path(self.extra_list.item(index).data(Qt.ItemDataRole.UserRole)) == resolved:
                 return
-        except Exception as exc:
-            QMessageBox.critical(self, "Preflight setup failed", str(exc))
-            return
-        self.create_log.setPlainText("Preflight scan running in the background…")
+        item = QListWidgetItem(str(resolved))
+        item.setData(Qt.ItemDataRole.UserRole, str(resolved))
+        self.extra_list.addItem(item)
 
-        def operation(progress):
-            return run_preflight(source, target, selected_paths=selected_paths)
+    def _remove_extra(self):
+        for item in self.extra_list.selectedItems():
+            self.extra_list.takeItem(self.extra_list.row(item))
 
-        self._start_worker(operation, self._preflight_succeeded, self._preflight_failed)
+    def _update_destination_hint(self, *_):
+        if self.format.currentData() == "zip":
+            self.destination.setPlaceholderText("Choose the ZIP file path, e.g. E:/Backups/Computer-Profile.zip")
+            self.destination_hint.setText("A standard ZIP file stored without compression. Open it with Windows Explorer, 7-Zip or other ZIP utilities.")
+        else:
+            self.destination.setPlaceholderText("Choose the parent folder for the backup")
+            self.destination_hint.setText("Creates a timestamped PixelIT-Backup folder containing regular files and folders. No proprietary format.")
 
-    def _preflight_succeeded(self, result: dict) -> None:
-        lines = [
-            f"Readable files: {result['files_readable']}",
-            f"Readable bytes: {result['bytes_readable']:,}",
-            f"Skipped items: {result['items_skipped']}",
-            f"Advisory ready: {result['ready']}",
-            "",
-        ]
-        lines.extend(
-            f"{item['severity'].upper()} {item['code']}: {item['path']} — {item['message']}"
-            for item in result["findings"]
-        )
-        self.create_log.setPlainText("\n".join(lines))
+    def _choose_destination(self):
+        if self.format.currentData() == "zip":
+            value, _ = QFileDialog.getSaveFileName(self, "Save standard ZIP backup", "PixelIT-Backup.zip", "ZIP archive (*.zip)")
+        else:
+            value = QFileDialog.getExistingDirectory(self, "Choose backup destination folder")
+        if value:
+            self.destination.setText(value)
 
-    def _preflight_failed(self, message: str) -> None:
-        self.create_log.setPlainText(f"Preflight failed: {message}")
-        QMessageBox.critical(self, "Preflight failed", message)
-
-    def _start_worker(self, operation, on_success, on_failure, progress_handler=None) -> None:
+    def _start_backup(self):
         if self._active_thread is not None:
-            QMessageBox.warning(self, "Operation in progress", "Wait for the current migration operation to finish.")
             return
-        self.centralWidget().setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        thread = QThread(self)
-        worker = _OperationWorker(operation)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.succeeded.connect(on_success)
-        worker.failed.connect(on_failure)
-        if progress_handler is not None:
-            worker.progress.connect(progress_handler)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._worker_finished)
-        thread.finished.connect(thread.deleteLater)
-        self._active_thread = thread
-        self._active_worker = worker
-        thread.start()
+        profiles = self._selected_profiles()
+        extras = [Path(self.extra_list.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.extra_list.count())]
+        destination_text = self.destination.text().strip()
+        if not profiles and not extras:
+            QMessageBox.warning(self, "Choose data", "Select at least one user profile or add a file/folder.")
+            return
+        if not destination_text:
+            QMessageBox.warning(self, "Choose destination", "Select where the backup should be saved.")
+            return
+        destination = Path(destination_text)
+        if self.format.currentData() == "folder" and destination.exists() and not destination.is_dir():
+            QMessageBox.warning(self, "Invalid destination", "For folder backups, choose an existing parent folder.")
+            return
+        if self.format.currentData() == "zip" and destination.exists() and destination.is_dir():
+            QMessageBox.warning(self, "Invalid destination", "For ZIP backups, choose a filename ending in .zip.")
+            return
+        self._started_at = time.monotonic()
+        self._last_progress = 0
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Scanning files and estimating total size…")
+        self.eta_label.setText("Estimated time remaining: calculating…")
+        self.current_file.clear()
+        self.start_button.setEnabled(False)
+        self.status_label.setText("Backup running")
+        self._active_thread = QThread(self)
+        self._active_worker = _BackupWorker(profiles, extras, destination, self.format.currentData())
+        self._active_worker.moveToThread(self._active_thread)
+        self._active_thread.started.connect(self._active_worker.run)
+        self._active_worker.progress.connect(self._update_progress)
+        self._active_worker.succeeded.connect(self._backup_succeeded)
+        self._active_worker.failed.connect(self._backup_failed)
+        self._active_worker.finished.connect(self._active_thread.quit)
+        self._active_worker.finished.connect(self._active_worker.deleteLater)
+        self._active_thread.finished.connect(self._worker_finished)
+        self._active_thread.finished.connect(self._active_thread.deleteLater)
+        self._active_thread.start()
+
+    @Slot(int, int, str)
+    def _update_progress(self, completed: int, total: int, current: str):
+        if total <= 0:
+            self.progress_bar.setRange(0, 0)
+            self.progress_label.setText(current)
+            self.eta_label.setText("Estimated time remaining: calculating…")
+            return
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+        percent = min(100, int(completed * 100 / total))
+        self.progress_bar.setValue(percent)
+        elapsed = max(0.01, time.monotonic() - self._started_at)
+        rate = completed / elapsed if completed else 0
+        remaining = max(0, total - completed)
+        eta = self._format_duration(remaining / rate) if rate > 0 else "calculating…"
+        self.progress_label.setText(f"{percent}%  ·  {format_bytes(completed)} of {format_bytes(total)}")
+        self.eta_label.setText(f"Estimated time remaining: {eta}")
+        self.current_file.setText(f"Current file: {current}")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, seconds = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m {seconds}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
+
+    @Slot(object)
+    def _backup_succeeded(self, result: dict):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        elapsed = self._format_duration(time.monotonic() - self._started_at)
+        self.progress_label.setText(f"Completed · {format_bytes(result['bytes'])} · {result['files']:,} files")
+        self.eta_label.setText(f"Time taken: {elapsed}")
+        self.current_file.setText(f"Saved to: {result['output']}")
+        self.status_label.setText("Backup complete")
+        QMessageBox.information(
+            self, "Backup complete",
+            f"Backup completed successfully.\n\nFiles: {result['files']:,}\n"
+            f"Readable data: {format_bytes(result['bytes'])}\nTime: {elapsed}\n\n"
+            f"Location:\n{result['output']}"
+        )
+
+    @Slot(str)
+    def _backup_failed(self, message: str):
+        self.status_label.setText("Backup failed")
+        self.progress_label.setText("Backup stopped before completion.")
+        self.eta_label.setText("Estimated time remaining: —")
+        self.current_file.setText(message)
+        QMessageBox.critical(self, "Backup failed", f"The backup could not be completed.\n\n{message}")
 
     @Slot()
-    def _worker_finished(self) -> None:
-        QApplication.restoreOverrideCursor()
-        self.centralWidget().setEnabled(True)
-        self.progress.setRange(0, 100)
+    def _worker_finished(self):
+        self.start_button.setEnabled(True)
         self._active_thread = None
         self._active_worker = None
 
-    @Slot(int, int, str)
-    def _create_progress(self, index: int, total: int, path: str) -> None:
-        if total <= 0:
-            self.progress.setRange(0, 0)
-            self.statusBar().showMessage(path)
-            return
-        if self.progress.maximum() == 0:
-            self.progress.setRange(0, 100)
-        self.progress.setValue(int(index * 100 / total))
-        self.statusBar().showMessage(f"Packaging {index}/{total}: {path}")
-
-    @Slot(int, int, str)
-    def _restore_progress(self, index: int, total: int, path: str) -> None:
-        self.statusBar().showMessage(f"Restoring {index}/{total}: {path}")
-
-    def _create_package(self) -> None:
-        source = Path(self.source.text().strip())
-        output = Path(self.output.text().strip())
-        passphrase = self.passphrase.text()
-        selected = [check.text() for check in self.folder_checks if check.isChecked()]
-        include_outlook = self.include_outlook.isChecked()
-        job_id = self.job_id.text().strip() or None
-        if not source.is_dir() or not output.name or (not selected and not include_outlook):
-            QMessageBox.warning(
-                self, "Missing information",
-                "Choose a source, output package and at least one folder or discovered Outlook data."
-            )
-            return
-        if len(passphrase) < 12:
-            QMessageBox.warning(self, "Passphrase too short", "Use a unique passphrase of at least 12 characters.")
-            return
-        self.progress.setValue(0)
-        self.create_log.setPlainText("Preflight and inventory scan running…")
-
-        def operation(progress):
-            progress(0, 0, "Running preflight checks…")
-            selected_paths = list(selected)
-            if include_outlook:
-                selected_paths.extend(outlook_relative_paths(source))
-            preflight = run_preflight(source, output, selected_paths=selected_paths)
-            if not preflight["ready"]:
-                details = "\n".join(
-                    f"{item['severity'].upper()} {item['code']}: {item['path']} — {item['message']}"
-                    for item in preflight["findings"]
-                )
-                raise ValueError("Preflight found blocking errors. Correct these before packaging:\n" + details)
-            progress(0, 0, "Inventorying and hashing selected files…")
-            manifest = build_manifest(source, selected_paths, job_id)
-            if not manifest.records:
-                raise ValueError("No files were found in the selected folders or Outlook locations.")
-            create_package(source, output, manifest, passphrase, progress=progress)
-            return {"manifest": manifest, "output": output, "preflight": preflight}
-
-        self._start_worker(operation, self._create_succeeded, self._create_failed, self._create_progress)
-
-    def _create_failed(self, message: str) -> None:
-        self.passphrase.clear()
-        self.create_log.appendPlainText(f"\nERROR: {message}")
-        QMessageBox.critical(self, "Package failed", message)
-
-    def _create_succeeded(self, result: dict) -> None:
-        self.passphrase.clear()
-        manifest = result["manifest"]
-        output = result["output"]
-        findings = result["preflight"]["findings"]
-        warnings = [item for item in findings if item["severity"] == "warning"]
-        self.create_log.appendPlainText(
-            f"\nPackage created: {output}\nManifest file count: {len(manifest.records)}"
-            f"\nPreflight warnings: {len(warnings)}"
-            "\nRun a test restore before relying on this package."
-        )
-        for item in warnings:
-            self.create_log.appendPlainText(
-                f"WARNING {item['code']}: {item['path']} — {item['message']}"
-            )
-        message = "Encrypted package created. Inspect it and perform a test restore to a separate folder."
-        if warnings:
-            QMessageBox.warning(
-                self, "Package created with warnings",
-                message + f"\n\nPreflight reported {len(warnings)} warning(s). Review the log before using this package."
-            )
+    def closeEvent(self, event):
+        if self._active_thread is not None:
+            QMessageBox.warning(self, "Backup in progress", "Wait for the backup to finish before closing the application.")
+            event.ignore()
         else:
-            QMessageBox.information(self, "Package created", message)
-        suggested = f"PixelIT-Job-{manifest.job_id}-package-report.json"
-        report_path, _ = QFileDialog.getSaveFileName(
-            self, "Save technician package report", suggested, "JSON report (*.json)"
-        )
-        if report_path:
-            write_job_report(
-                Path(report_path), job_id=manifest.job_id, operation="package-create",
-                source_label=manifest.source_computer, destination_label=output.name,
-                discovered=len(manifest.records),
-                skipped=[
-                    {"path": item["path"], "reason": item["message"], "code": item["code"]}
-                    for item in warnings
-                ],
-                verification=("package-created-with-preflight-warnings; test-restore-required" if warnings
-                              else "package-created; test-restore-required")
-            )
-            self.create_log.appendPlainText(f"\nTechnician report saved: {report_path}")
-
-    def _preview_restore(self) -> None:
-        package = Path(self.package_path.text().strip())
-        destination = Path(self.destination.text().strip())
-        passphrase = self.restore_passphrase.text()
-        if not package.is_file() or not destination.is_dir() or not passphrase:
-            QMessageBox.warning(
-                self, "Missing information",
-                "Choose a package, existing destination root and passphrase."
-            )
-            return
-        self.restore_manifest = None
-        self.restore_log.setPlainText("Authenticating package and checking destination conflicts…")
-
-        def operation(progress):
-            manifest = inspect_package(package, passphrase)
-            lines = [
-                f"Job ID: {manifest.job_id}",
-                f"Source computer: {manifest.source_computer}",
-                f"Files: {len(manifest.records)}",
-                "",
-                "Preview:",
-            ]
-            conflicts = 0
-            for record in manifest.records:
-                target = resolve_under(destination, record.path)
-                if target.exists():
-                    conflicts += 1
-                    state = "CONFLICT — will be skipped"
-                else:
-                    state = "CREATE"
-                lines.append(f"{state}: {record.path}")
-            lines.extend(["", f"Conflicts: {conflicts}", "No destination files have been changed."])
-            return {"manifest": manifest, "preview": "\n".join(lines)}
-
-        self._start_worker(operation, self._preview_succeeded, self._preview_failed)
-
-    def _preview_succeeded(self, result: dict) -> None:
-        self.restore_manifest = result["manifest"]
-        self.restore_log.setPlainText(result["preview"])
-
-    def _preview_failed(self, message: str) -> None:
-        self.restore_manifest = None
-        self.restore_log.setPlainText(f"Inspection failed: {message}")
-        QMessageBox.critical(self, "Package inspection failed", message)
-
-    def _restore(self) -> None:
-        if self.restore_manifest is None:
-            QMessageBox.warning(self, "Preview required", "Inspect the package and preview conflicts first.")
-            return
-        if QMessageBox.question(
-            self, "Confirm restore",
-            "Restore files that do not already exist? Existing files will be skipped. Continue?"
-        ) != QMessageBox.Yes:
-            return
-        package = Path(self.package_path.text().strip())
-        destination = Path(self.destination.text().strip())
-        passphrase = self.restore_passphrase.text()
-        manifest = self.restore_manifest
-        self.restore_log.appendPlainText("\nRestore started…")
-
-        def operation(progress):
-            return restore_package(package, destination, passphrase, overwrite_paths=set(), progress=progress)
-
-        self._pending_restore_manifest = manifest
-        self._pending_restore_destination = destination
-        self._start_worker(operation, self._restore_succeeded_from_worker,
-                           self._restore_failed, self._restore_progress)
-
-    def _restore_succeeded_from_worker(self, report: dict) -> None:
-        # A bound QObject slot ensures UI updates run on the GUI thread.
-        self._restore_succeeded(
-            report, self._pending_restore_manifest, self._pending_restore_destination
-        )
-
-    def _restore_failed(self, message: str) -> None:
-        self.restore_passphrase.clear()
-        self.restore_log.appendPlainText(f"\nRESTORE FAILED: {message}")
-        QMessageBox.critical(self, "Restore failed", message)
-
-    def _restore_succeeded(self, report: dict, manifest, destination: Path) -> None:
-        self.restore_passphrase.clear()
-        self.restore_log.appendPlainText(
-            "\n\nRESTORE REPORT\n"
-            + f"Created: {len(report['created'])}\nSkipped: {len(report['skipped'])}\nErrors: {len(report['errors'])}"
-        )
-        for section in ("skipped", "errors"):
-            for item in report[section]:
-                self.restore_log.appendPlainText(f"{section.upper()}: {item}")
-        QMessageBox.information(
-            self, "Restore finished",
-            f"Created {len(report['created'])} files. Skipped {len(report['skipped'])}. "
-            f"Errors {len(report['errors'])}. Review the report."
-        )
-        suggested = f"PixelIT-Job-{manifest.job_id}-restore-report.json"
-        report_path, _ = QFileDialog.getSaveFileName(
-            self, "Save technician report", suggested, "JSON report (*.json)"
-        )
-        if report_path:
-            write_job_report(
-                Path(report_path), job_id=manifest.job_id, operation="restore",
-                source_label=manifest.source_computer, destination_label=destination.name,
-                discovered=len(manifest.records), created=report["created"],
-                overwritten=report["overwritten"], skipped=report["skipped"], errors=report["errors"],
-                verification=("package-authenticated; restore-errors-present" if report["errors"]
-                              else "package-authenticated; restored-files-verified")
-            )
-            self.restore_log.appendPlainText(f"\nTechnician report saved: {report_path}")
+            event.accept()
 
 
 def main() -> int:
-    app = QApplication(sys.argv); app.setApplicationName("Pixel IT Profile Migrator")
-    window = MigratorWindow(); window.show()
+    app = QApplication(sys.argv)
+    app.setApplicationName("Pixel IT Profile Migrator")
+    app.setFont(QFont("Segoe UI", 10))
+    window = MigratorWindow()
+    window.show()
     return app.exec()
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
